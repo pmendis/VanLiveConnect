@@ -1,0 +1,56 @@
+1.2.0
+    User interface improvements:
+    * Add automotive icons from Material Design font (https://github.com/Templarian/MaterialDesign)
+    * Climate control popup shows readout of condenser pressure sensor in bar, not in degrees Celsius/Fahrenheit
+    * Sat nav: better emulation of the behaviour of the original MFD, by keeping list grayed out until the
+      actual content has been received from the sat nav unit
+    * Improve handling of IR remote control 'VAL' button on popups: match behaviour of original MFD
+    * Show popup 'Computing route in progress' also while driving, similar to original MFD
+    * Fix bug in trip computer cycling sequence when starting from "GPS info" screen
+    * In sat nav guidance mode, always show instruments in small screen. Trip computer is shown in popup,
+      like in the original MFD.
+    * When user is browsing the menu, only show popups for warnings, not for info
+    * Fix: screen occasionally switches back to 'clock' directly after switching to 'pre-flight'
+    * Fix bug where current station is not highlighted in tuner presets popup
+    * Tapping the screen when a popup is visible will exit the popup
+
+    "Under the hood" improvements:
+    * Improved Wi-Fi connectivity by working around an apparent bug in class AsyncWebSocketClient
+      (ESPAsyncWebSrv library and its interworking with EPSAsyncTCP library)
+    * Improved Wi-Fi connectivity by checking more often if there are queued JSON packets to be sent
+    * Web server handles low-memory conditions by responding with HTTP code 429 ("too many requests - try again later")
+    * Fixed captive portal handling
+    * Fixed infinite-loop bug, causing occasional software watchdog timeout
+
+    Minor changes:
+    * Wi-Fi access point (AP) IP address is changed to 192.168.4.1, and now is by default configured to have a password
+    * README.md: better explanation how to connect Android to both Wi-Fi and Mobile Data simultaneously
+
+1.1.0
+    User interface improvements:
+    * Use the [Peugeot-New](https://www.cdnfonts.com/peugeot-new.font) font in the Web-based user interface
+    * Three color themes (blue, orange and gold) selectable in "Set color and brightness" menu screen
+    * Many small improvements in user interface layout and handling ("Doors locked" popup, sat nav "no audio" icon, ...)
+    * Better handling of sat nav initialization, CD change and download
+    * Improved handling or IR remote control
+    * Serve up to two connected clients
+    * Show lights and indicator status also on small (left) "Instruments" panel
+
+    "Under the hood" improvements:
+    * Web server can now also use the new "LittleFS" Flash File system (as alternative to the SPIFFS) to serve its
+      web documents from
+    * Minimize loss of important data in flaky Wi-Fi environments by classifying data. Important data is kept for
+      later (re-)transmission if the WebSocket transmission queue is running full
+    * Selective response to Android  'http://.../generate_204' requests, enabling the use of mobile data for internet
+      connectivity, while still receiving vehicle data via Wi-Fi.
+    * Tested up to ESP8266 board package version 3.1.2
+    * Added patches and patched copies for some of the files of the used libraries
+    * WebSocket: switched from "WebSockets" library (https://github.com/Links2004/arduinoWebSockets) to
+      "ESPAsyncWebSrv" library (https://github.com/dvarrel/ESPAsyncWebSrv)
+    * WebServer: switched from "ESP8266WebServer " library (as shipped with ESP8266 board package) to
+      "ESPAsyncWebSrv" library (https://github.com/dvarrel/ESPAsyncWebSrv)
+    * Fix compiler warnings
+    * Improve debug output (on serial console)
+
+1.0.0
+    First release of VanLiveConnect.
