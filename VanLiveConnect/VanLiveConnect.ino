@@ -77,6 +77,10 @@ void LoopWebServer();
 #ifdef USE_TFT_DISPLAY
 void SetupDisplay();
 void LoopDisplay();
+void DisplayStatusLine(const char* text);
+  #define DISPLAY_STATUS(text) DisplayStatusLine(text)
+#else
+  #define DISPLAY_STATUS(text)
 #endif // USE_TFT_DISPLAY
 
 // Defined in WebSocket.ino
@@ -399,9 +403,12 @@ void setup()
     Serial.print(F("/MFD.html\n"));
   #endif // WIFI_AP_MODE
 
+    DISPLAY_STATUS("setup: VAN receiver...");
     SetupVanReceiver();
 
+    DISPLAY_STATUS("setup: IR receiver...");
     IrSetup();
+    DISPLAY_STATUS("setup: done, entering loop");
 
     sleepAfter = SLEEP_MS_AFTER_NO_VAN_BUS_ACTIVITY;
 

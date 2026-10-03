@@ -13,15 +13,16 @@
  *
  * Libraries:
  * - TFT_eSPI by Bodmer (tested with 2.5.43)
- * - XPT2046_Touchscreen by Paul Stoffregen (tested with 1.4)
  * - ArduinoJson by Benoit Blanchon (tested with 7.4.3)
+ *
+ * The XPT2046 touch controller is read with a small bit-banged SPI routine on its own pins. On the ESP32-S3 with
+ * ESP32 core 3.x, a second hardware SPIClass next to TFT_eSPI (which needs the HSPI port there) was found to
+ * hang, and bit-banging at touch-polling rates costs nothing noticeable.
  */
 
 #ifdef USE_TFT_DISPLAY
 
-#include <SPI.h>
 #include <TFT_eSPI.h>
-#include <XPT2046_Touchscreen.h>
 #include <ArduinoJson.h>
 
 // Defined in WebSocket.ino
@@ -51,10 +52,73 @@ extern unsigned long lastActivityAt;
 
 static TFT_eSPI tft;
 
-// The TFT is driven on the HSPI port (see -DUSE_HSPI_PORT in the build script), so the touch controller gets
-// the other one. Arduino's SPIClass handles the FSPI port correctly; only TFT_eSPI's direct register access does not.
-static SPIClass touchSpi(FSPI);
-static XPT2046_Touchscreen touch(TFT_TOUCH_CS, TFT_TOUCH_IRQ);
+// -----
+// XPT2046 touch controller, bit-banged SPI
+
+#define TOUCH_Z_THRESHOLD 400
+
+static inline void TouchClockPulse()
+{
+    digitalWrite(TFT_TOUCH_CLK, HIGH);
+    delayMicroseconds(2);
+    digitalWrite(TFT_TOUCH_CLK, LOW);
+    delayMicroseconds(2);
+} // TouchClockPulse
+
+// Send an 8-bit command, then clock in the 12-bit result (1 busy bit, 12 data bits, 3 padding bits)
+static uint16_t TouchTransfer(uint8_t cmd)
+{
+    for (int i = 7; i >= 0; i--)
+    {
+        digitalWrite(TFT_TOUCH_MOSI, (cmd >> i) & 1);
+        TouchClockPulse();
+    } // for
+    digitalWrite(TFT_TOUCH_MOSI, LOW);
+
+    uint16_t r = 0;
+    for (int i = 0; i < 16; i++)
+    {
+        digitalWrite(TFT_TOUCH_CLK, HIGH);
+        delayMicroseconds(2);
+        r = (r << 1) | (digitalRead(TFT_TOUCH_MISO) ? 1 : 0);
+        digitalWrite(TFT_TOUCH_CLK, LOW);
+        delayMicroseconds(2);
+    } // for
+    return (r >> 3) & 0x0FFF;
+} // TouchTransfer
+
+static void TouchSetup()
+{
+    pinMode(TFT_TOUCH_CLK, OUTPUT);
+    pinMode(TFT_TOUCH_MOSI, OUTPUT);
+    pinMode(TFT_TOUCH_MISO, INPUT);
+    pinMode(TFT_TOUCH_CS, OUTPUT);
+    pinMode(TFT_TOUCH_IRQ, INPUT_PULLUP);
+    digitalWrite(TFT_TOUCH_CLK, LOW);
+    digitalWrite(TFT_TOUCH_MOSI, LOW);
+    digitalWrite(TFT_TOUCH_CS, HIGH);
+
+    // One dummy conversion with power-down mode 00 so that the PENIRQ output is enabled
+    digitalWrite(TFT_TOUCH_CS, LOW);
+    TouchTransfer(0xD0);
+    digitalWrite(TFT_TOUCH_CS, HIGH);
+} // TouchSetup
+
+// Returns true if the panel is being pressed; optionally returns raw 12-bit x and y
+static bool TouchPressed(uint16_t* rawX = 0, uint16_t* rawY = 0)
+{
+    digitalWrite(TFT_TOUCH_CS, LOW);
+    uint16_t z1 = TouchTransfer(0xB1);  // Z1, keep powered (PD = 01)
+    uint16_t z2 = TouchTransfer(0xC1);  // Z2
+    uint16_t x = TouchTransfer(0x91);   // X
+    uint16_t y = TouchTransfer(0xD0);   // Y, power down with PENIRQ enabled (PD = 00)
+    digitalWrite(TFT_TOUCH_CS, HIGH);
+
+    int z = (int)z1 + 4095 - (int)z2;
+    if (rawX) *rawX = x;
+    if (rawY) *rawY = y;
+    return z >= TOUCH_Z_THRESHOLD && z1 > 0;
+} // TouchPressed
 
 enum TDisplayScreen
 {
@@ -506,8 +570,7 @@ static void Redraw()
 
 static void HandleTouch()
 {
-    if (! touch.tirqTouched()) return;
-    if (! touch.touched()) return;
+    if (! TouchPressed()) return;
     if (millis() - lastTouchAt < TOUCH_DEBOUNCE_MS) return;
     lastTouchAt = millis();
 
@@ -532,9 +595,7 @@ void SetupDisplay()
     tft.setRotation(TFT_ROTATION);
     tft.fillScreen(COL_BG);
 
-    touchSpi.begin(TFT_TOUCH_CLK, TFT_TOUCH_MISO, TFT_TOUCH_MOSI, TFT_TOUCH_CS);
-    touch.begin(touchSpi);
-    touch.setRotation(TFT_TOUCH_ROTATION);
+    TouchSetup();
 
     // Splash
     tft.setTextDatum(MC_DATUM);
@@ -554,6 +615,16 @@ void SetupDisplay()
     fullRedraw = true;
     dirty = true;
 } // SetupDisplay
+
+// Show a one-line status text at the bottom of the screen (used during start-up, before the first redraw)
+void DisplayStatusLine(const char* text)
+{
+    tft.setTextDatum(BC_DATUM);
+    tft.setTextPadding(SCREEN_W - 8);
+    tft.setTextColor(COL_DIM, COL_BG);
+    tft.drawString(text, SCREEN_W / 2, SCREEN_H - 4, 2);
+    tft.setTextPadding(0);
+} // DisplayStatusLine
 
 void LoopDisplay()
 {

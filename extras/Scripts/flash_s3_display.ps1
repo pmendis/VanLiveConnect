@@ -7,7 +7,7 @@
 #   .\extras\Scripts\flash_s3_display.ps1 -NoDisplay      # compile for the S3 without the TFT code
 #
 # Requires: Arduino IDE 2 (for its bundled arduino-cli) or arduino-cli on PATH, ESP32 core 3.x, libraries
-# VanBus, Async TCP (ESP32Async), ESP Async WebServer 3.9.x, TFT_eSPI, XPT2046_Touchscreen, ArduinoJson.
+# VanBus, Async TCP (ESP32Async), ESP Async WebServer 3.9.x, TFT_eSPI, ArduinoJson.
 
 param(
     [string]$Port = "",
@@ -56,7 +56,6 @@ $cliArgs = @(
 if (-not $NoDisplay) {
     $cliArgs += @(
         "--library", (Join-Path $lib "TFT_eSPI"),
-        "--library", (Join-Path $lib "XPT2046_Touchscreen"),
         "--library", (Join-Path $lib "ArduinoJson"),
         "--build-property", "compiler.cpp.extra_flags=$tftFlags"
     )
