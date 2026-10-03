@@ -2795,8 +2795,8 @@ const char mfd_html[] PROGMEM = R"=====(
 			</div>
 		</div>
 
-		<div id="exterior_temp_shown" gid="exterior_temp_shown" class="hdrItem" style="display:none; left:1050px; top:17px; width:110px; height:50px; position:absolute; text-align:center; font-size:30px;">-- &deg;C</div>
-		<div id="date_time_small" class="hdrItem hdrClock" style="display:none; left:1148px; top:23px; width:198px; position:absolute; text-align:center; font-size:21px;">---  - --:--</div>
+		<div id="exterior_temp_shown" gid="exterior_temp_shown" class="hdrItem" style="display:none; left:1040px; top:17px; width:100px; height:50px; position:absolute; text-align:center; font-size:28px;">-- &deg;C</div>
+		<div id="date_time_small" class="hdrItem hdrClock" style="display:none; left:1130px; top:24px; width:205px; position:absolute; text-align:center; font-size:19px;">---  - --:--</div>
 )====="
 
 COMMS_LED
