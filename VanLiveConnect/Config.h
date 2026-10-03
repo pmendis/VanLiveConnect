@@ -271,6 +271,11 @@
     #define IR_RECV_PIN GPIO_NUM_7 // IR receiver data pin
     #define IR_VCC GPIO_NUM_11
     #define IR_GND GPIO_NUM_9
+   #elif defined CONFIG_IDF_TARGET_ESP32S3
+    // ESP32-S3: GPIO 22..25 do not exist, GPIO 19/20 are native USB, GPIO 35..37 are used by octal PSRAM
+    #define IR_RECV_PIN GPIO_NUM_4 // IR receiver data pin
+    #define IR_VCC GPIO_NUM_5
+    #define IR_GND GPIO_NUM_15
    #else
     #define IR_RECV_PIN GPIO_NUM_18 // IR receiver data pin
     #define IR_VCC GPIO_NUM_23
@@ -296,6 +301,10 @@
    #ifdef CONFIG_IDF_TARGET_ESP32S2
     #define IR_RECV_PIN GPIO_NUM_11 // IR receiver data pin
     #define IR_VCC GPIO_NUM_7
+    #define IR_GND GPIO_NUM_5
+   #elif defined CONFIG_IDF_TARGET_ESP32S3
+    #define IR_RECV_PIN GPIO_NUM_15 // IR receiver data pin
+    #define IR_VCC GPIO_NUM_4
     #define IR_GND GPIO_NUM_5
    #else
     #define IR_RECV_PIN GPIO_NUM_23 // IR receiver data pin
@@ -338,6 +347,69 @@
   #endif // ARDUINO_ARCH_ESP32
 
 #endif // ON_DESK_MFD_ESP_MAC
+
+// -----
+// Optional on-board TFT display (2.8" 240x320 ILI9341 SPI with XPT2046 touch), see 'Display.ino'
+//
+// The display is enabled by compiling with -DUSE_TFT_DISPLAY. The TFT_eSPI library reads its pin and driver
+// settings from compiler defines (not from this file), so the complete set of defines is passed on the command
+// line; see 'extras/Scripts/flash_s3_display.ps1'. For reference, the defines used for the ESP32-S3 DevKitC-1
+// (N16R8) are:
+//
+//   -DUSE_TFT_DISPLAY -DUSER_SETUP_LOADED=1 -DILI9341_DRIVER=1 -DTFT_WIDTH=240 -DTFT_HEIGHT=320
+//   -DTFT_SCLK=12 -DTFT_MOSI=11 -DTFT_MISO=14 -DTFT_CS=10 -DTFT_DC=9 -DTFT_RST=8 -DTFT_BL=7 -DTFT_BACKLIGHT_ON=HIGH
+//   -DSPI_FREQUENCY=40000000 -DSPI_READ_FREQUENCY=20000000
+//   -DLOAD_GLCD -DLOAD_FONT2 -DLOAD_FONT4 -DLOAD_FONT6 -DLOAD_FONT7 -DLOAD_GFXFF
+//
+// Wiring (ESP32-S3 DevKitC-1):
+//
+//   TFT pin     ESP32-S3 GPIO
+//   VCC         3V3 (check your module; some need 5V)
+//   GND         GND
+//   SCK         12
+//   SDI (MOSI)  11
+//   SDO (MISO)  14
+//   CS          10
+//   DC          9
+//   RESET       8
+//   LED         7
+//   T_CLK       16   (touch controller on its own SPI bus, see below)
+//   T_DIN       17
+//   T_DO        18
+//   T_CS        6
+//   T_IRQ       1
+//
+// Avoided on the S3: GPIO 19/20 (native USB), GPIO 22..25 (do not exist), GPIO 35..37 (octal PSRAM),
+// GPIO 0/3/45/46 (strapping), GPIO 21 (VAN bus RX), GPIO 13 (sleep wake pin), GPIO 4/5/15 (IR receiver).
+//
+#ifdef USE_TFT_DISPLAY
+
+  // Touch controller (XPT2046) pins; it is driven on a separate SPI bus so it does not interfere with the TFT
+  #ifndef TFT_TOUCH_CLK
+    #define TFT_TOUCH_CLK GPIO_NUM_16
+  #endif
+  #ifndef TFT_TOUCH_MOSI
+    #define TFT_TOUCH_MOSI GPIO_NUM_17
+  #endif
+  #ifndef TFT_TOUCH_MISO
+    #define TFT_TOUCH_MISO GPIO_NUM_18
+  #endif
+  #ifndef TFT_TOUCH_CS
+    #define TFT_TOUCH_CS GPIO_NUM_6
+  #endif
+  #ifndef TFT_TOUCH_IRQ
+    #define TFT_TOUCH_IRQ GPIO_NUM_1
+  #endif
+
+  // Landscape. Use 3 (and touch rotation 1) if the image is upside down.
+  #ifndef TFT_ROTATION
+    #define TFT_ROTATION 1
+  #endif
+  #ifndef TFT_TOUCH_ROTATION
+    #define TFT_TOUCH_ROTATION 3
+  #endif
+
+#endif // USE_TFT_DISPLAY
 
 // -----
 // Debugging

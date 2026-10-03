@@ -73,6 +73,12 @@ void SetupStore();
 void SetupWebServer();
 void LoopWebServer();
 
+// Optional on-board TFT display, defined in Display.ino
+#ifdef USE_TFT_DISPLAY
+void SetupDisplay();
+void LoopDisplay();
+#endif // USE_TFT_DISPLAY
+
 // Defined in WebSocket.ino
 bool SendJsonOnWebSocket(const char* json, bool saveForLater = false, bool isTestMessage = false);
 void SetupWebSocket();
@@ -383,6 +389,10 @@ void setup()
     SetupWebServer();
     SetupWebSocket();
 
+  #ifdef USE_TFT_DISPLAY
+    SetupDisplay();
+  #endif // USE_TFT_DISPLAY
+
   #ifdef WIFI_AP_MODE
     Serial.printf_P(PSTR("Please connect to Wi-Fi network '%s', then surf to: http://"), wifiSsid);
     Serial.print(apIP);
@@ -433,6 +443,10 @@ void loop()
 
     LoopWebSocket();
     LoopWebServer();
+
+  #ifdef USE_TFT_DISPLAY
+    LoopDisplay();
+  #endif // USE_TFT_DISPLAY
 
     // IR receiver
     TIrPacket irPacket;
