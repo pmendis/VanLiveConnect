@@ -389,8 +389,6 @@ body
   display:none;
   font-size:40px;
   box-shadow:0 0 30px var(--accent), 0 20px 50px rgba(0,0,0,0.6);
-  backdrop-filter:blur(6px);
-  -webkit-backdrop-filter:blur(6px);
 }
 .messagePopupArea
 {
@@ -770,5 +768,208 @@ body
   text-align:left;
   font-size:35px;
   line-height:1.5;
+}
+
+/* ===== Layout additions for the "HMI" restyle ===== */
+
+/* Header bar across the top (replaces the former bottom status strip) */
+.hdrBar
+{
+  background:linear-gradient(180deg, var(--panel-fill-2), var(--panel-fill));
+  border-radius:var(--panel-radius);
+  box-shadow:
+    inset 0 0 0 var(--frame-width) var(--accent),
+    inset 0 -30px 40px -30px rgba(0,0,0,0.5),
+    0 0 28px rgba(0,0,0,0.55);
+}
+.hdrItem
+{
+  z-index:2;
+}
+.hdrClock
+{
+  color:var(--accent);
+  text-shadow:0 0 10px var(--accent);
+  letter-spacing:1px;
+}
+
+/* Header tabs: purely visual; the active one follows body[data-screen] */
+.hdrTabs
+{
+  position:absolute;
+  left:14px;
+  top:8px;
+  height:54px;
+  display:flex;
+  gap:4px;
+  z-index:2;
+}
+.hdrTab
+{
+  position:relative;
+  height:54px;
+  line-height:54px;
+  padding:0 10px 0 8px;
+  font-size:18px;
+  letter-spacing:1px;
+  color:var(--disabled-element-color);
+  border-bottom:4px solid transparent;
+  box-sizing:border-box;
+  white-space:nowrap;
+}
+.hdrTab .fas
+{
+  margin-right:8px;
+  font-size:18px;
+}
+body[data-screen="clock"] .hdrTab[data-for="clock"],
+body[data-screen="tuner"] .hdrTab[data-for="audio"],
+body[data-screen="tape"] .hdrTab[data-for="audio"],
+body[data-screen="cd_player"] .hdrTab[data-for="audio"],
+body[data-screen="cd_changer"] .hdrTab[data-for="audio"],
+body[data-screen="instruments"] .hdrTab[data-for="instruments"],
+body[data-screen="pre_flight"] .hdrTab[data-for="instruments"],
+body[data-screen^="satnav"] .hdrTab[data-for="satnav"]
+{
+  color:#ffffff;
+  border-bottom-color:var(--accent);
+  background:linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.0));
+  text-shadow:0 0 10px var(--accent);
+  border-top-left-radius:10px;
+  border-top-right-radius:10px;
+}
+
+/* Arc gauges: a 180-degree ring. The '.gauge' element still receives the "scaleX(n)" transform from the
+   ESP (kept for compatibility); the fill is drawn from the --pct variable that MFD.js derives from it. */
+.arcGauge
+{
+  position:absolute;
+  width:260px;
+  height:134px;
+  overflow:hidden;
+}
+.arcGauge .arcZones,
+.arcGauge .gauge,
+.arcGauge .arcTicks
+{
+  position:absolute;
+  left:0px;
+  top:0px;
+  width:260px;
+  height:260px;
+  border-radius:50%;
+}
+.arcGauge .arcZones
+{
+  opacity:0.85;
+  -webkit-mask:radial-gradient(circle at 50% 50%, transparent 99px, #000 100px, #000 124px, transparent 125px);
+  mask:radial-gradient(circle at 50% 50%, transparent 99px, #000 100px, #000 124px, transparent 125px);
+}
+.arcGauge .gauge
+{
+  transform:none !important;  /* Overrides the inline "scaleX(n)" set by the data stream */
+  background:conic-gradient(from 270deg, var(--main-color) 0deg, var(--main-color) calc(var(--pct, 0) * 180deg), transparent calc(var(--pct, 0) * 180deg));
+  -webkit-mask:radial-gradient(circle at 50% 50%, transparent 103px, #000 104px, #000 120px, transparent 121px);
+  mask:radial-gradient(circle at 50% 50%, transparent 103px, #000 104px, #000 120px, transparent 121px);
+}
+.arcGauge .arcTicks
+{
+  width:260px;
+  height:260px;
+  -webkit-mask:radial-gradient(circle at 50% 50%, transparent 95px, #000 96px, #000 128px, transparent 129px);
+  mask:radial-gradient(circle at 50% 50%, transparent 95px, #000 96px, #000 128px, transparent 129px);
+  opacity:0.9;
+}
+.arcGauge .arcIcon
+{
+  left:100px;
+  top:52px;
+  width:60px;
+  height:60px;
+  font-size:50px;
+  line-height:60px;
+  color:var(--accent);
+  text-shadow:0 0 12px var(--accent);
+}
+.arcValue
+{
+  text-align:right;
+}
+.arcUnit
+{
+  opacity:0.8;
+}
+
+/* Radio: decorative station tile */
+.stationTile
+{
+  position:absolute;
+  width:170px;
+  height:170px;
+  border-radius:16px;
+  border:3px solid var(--accent);
+  background:
+    radial-gradient(circle at 50% 110%, rgba(255,255,255,0.18), transparent 55%),
+    linear-gradient(180deg, var(--accent), var(--selected-element-color));
+  box-shadow:0 0 18px var(--accent), inset 0 0 0 1px rgba(255,255,255,0.2);
+  text-align:center;
+  line-height:170px;
+  font-size:90px;
+  color:#ffffff;
+  text-shadow:0 0 16px rgba(255,255,255,0.7);
+}
+.ptyTag
+{
+  color:var(--accent);
+  opacity:0.9;
+}
+
+/* Audio settings: value fields drawn as sliders (thumb position from --val, range -9..+9) */
+.eqSlider
+{
+  text-align:right;
+  padding-right:4px;
+  box-sizing:border-box;
+}
+.eqSlider::before
+{
+  content:"";
+  position:absolute;
+  left:0px;
+  right:70px;
+  top:50%;
+  height:8px;
+  margin-top:-4px;
+  border-radius:4px;
+  background:var(--led-off-color);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,0.08);
+}
+.eqSlider::after
+{
+  content:"";
+  position:absolute;
+  top:50%;
+  width:22px;
+  height:22px;
+  margin-top:-11px;
+  margin-left:-11px;
+  border-radius:50%;
+  background:var(--accent);
+  box-shadow:0 0 12px var(--accent), inset 0 0 0 2px rgba(255,255,255,0.5);
+  left:calc((var(--val, 0) + 9) / 18 * (100% - 70px));
+}
+
+/* Audio settings: volume bar under the big number (range 0..30) */
+.volSlider::after
+{
+  content:"";
+  position:absolute;
+  left:0px;
+  bottom:-14px;
+  height:10px;
+  width:420px;
+  border-radius:5px;
+  background:linear-gradient(to right, var(--accent) 0%, var(--accent) calc(var(--val, 0) / 30 * 100%), var(--led-off-color) calc(var(--val, 0) / 30 * 100%), var(--led-off-color) 100%);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,0.08);
 }
 )=====";

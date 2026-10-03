@@ -139,6 +139,13 @@ function processJsonObject(item, jsonObject)
 					{
 						let value = propertyObj[property];
 						$(selector).get(0)[attribute][property] = value;
+
+						// Design hook: expose a "scaleX(n)" transform also as CSS variable --pct, for arc gauges
+						if (attribute === "style" && property === "transform")
+						{
+							let m = /scaleX\(([\d.]+)\)/.exec(value);
+							if (m) $(selector).get(0).style.setProperty("--pct", m[1]);
+						} // if
 					} // for
 				}
 				else
@@ -168,6 +175,10 @@ function processJsonObject(item, jsonObject)
 			{
 				// Handle simple "text" objects
 				$(selector).html(itemText);
+
+				// Design hook: expose numeric values also as CSS variable --val, for slider-style elements
+				let num = parseFloat(itemText);
+				if (! isNaN(num)) $(selector).get(0).style.setProperty("--val", num);
 			} // if
 		} // if
 	}); // each
@@ -628,6 +639,9 @@ function changeLargeScreenTo(id)
 	if (id === undefined || id === currentLargeScreenId) return;
 
 	if ($("#" + id).length === 0) return alert("Oops: screen '" + id + "'does not exist!!");
+
+	// Design hook: the header tabs follow the current large screen
+	$("#body").attr("data-screen", id);
 
 	var irFastRepeatValue = 0;
 	if (id === "satnav_choose_from_list")

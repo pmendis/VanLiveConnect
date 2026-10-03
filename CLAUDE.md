@@ -92,3 +92,18 @@ ID, and (if behaviour is needed) `MFD.js.ino` handles it in `handleItemChange`.
   understanding the original behaviour described in comments and `CHANGES.txt`.
 - Version lives in `VanLiveConnectVersion.h` and `CHANGES.txt`; bump both together.
 - Only tested on one vehicle (2003 Peugeot 406, type C MFD). Packet layouts for other models may differ.
+
+## Web redesign branch (`feature/web-redesign`)
+
+Visual restyle of the browser MFD in a modern head-unit look. Rules kept: every element id/gid, screen,
+popup and script function of the original is unchanged; only layout, colours and decoration differ.
+- Header bar (0..70 px) replaces the old bottom status strip; both panels moved down to top:70. Header tabs
+  are decorative and follow `body[data-screen]`, which `changeLargeScreenTo()` now sets.
+- Fuel and coolant are arc gauges: the `.gauge` element still receives the ESP's `scaleX(n)` transform,
+  `processJsonObject()` mirrors it into CSS variable `--pct`, and CSS overrides the transform.
+- Numeric text values are mirrored into `--val` (used by the audio-settings slider styling).
+- Palette entries in `setColorTheme()` gained `--panel-fill` / `--panel-fill-2`; all new CSS derives from the
+  palette variables so the blue/orange/gold and light/dark themes keep working.
+- The bundled Font Awesome woff is a subset: only icons already used by the original page render.
+- Preview without hardware: extract the raw strings from the `.ino` files to a folder, serve it statically and
+  inject data in the console with `writeToDom({...})`.
