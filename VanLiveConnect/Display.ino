@@ -35,7 +35,7 @@ extern unsigned long lastActivityAt;
 #define SCREEN_W 320
 #define SCREEN_H 240
 
-#define HEADER_H 28
+#define HEADER_H 30
 #define FOOTER_Y (SCREEN_H - 24)
 
 #define POPUP_MS 6000UL
@@ -43,12 +43,17 @@ extern unsigned long lastActivityAt;
 #define REDRAW_INTERVAL_MS 100UL
 
 // Colours
-#define COL_BG TFT_BLACK
+#define COL_BG 0x0062        // Deep navy (rgb 6,10,20), like the web page background
+#define COL_PANEL 0x08A4     // Panel fill (rgb 11,20,38)
 #define COL_FG TFT_WHITE
-#define COL_DIM 0x7BEF  // Mid grey
-#define COL_ACCENT 0x05BF  // Light blue, similar to the "blue" web theme
+#define COL_DIM 0x5B2F       // Muted blue-grey (rgb 90,100,125)
+#define COL_LED_OFF 0x10E6   // Inactive chip fill (rgb 18,28,50)
+#define COL_ACCENT 0x05BF    // Cyan accent, same as the web page
 #define COL_WARN TFT_ORANGE
 #define COL_OK TFT_GREEN
+#define COL_ZONE_RED 0xC000  // Gauge colour zones, as in the web page
+#define COL_ZONE_GREEN 0x0341
+#define COL_ZONE_BLUE 0x02D1
 
 static TFT_eSPI tft;
 
@@ -293,33 +298,6 @@ static const char* OrDash(const String& s, const char* dash = "--")
     return s.length() > 0 ? s.c_str() : dash;
 } // OrDash
 
-// Draw a text field that overwrites its previous content (via text padding)
-static void Field(int x, int y, int w, int font, uint8_t datum, const char* text, uint16_t color = COL_FG)
-{
-    gfx->setTextDatum(datum);
-    gfx->setTextPadding(w);
-    gfx->setTextColor(color, COL_BG);
-    gfx->drawString(text, x, y, font);
-    gfx->setTextPadding(0);
-} // Field
-
-static void Label(int x, int y, const char* text, uint16_t color = COL_DIM)
-{
-    gfx->setTextDatum(TL_DATUM);
-    gfx->setTextColor(color, COL_BG);
-    gfx->drawString(text, x, y, 2);
-} // Label
-
-static void Bar(int x, int y, int w, int h, int percent, uint16_t color)
-{
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
-    int fill = w * percent / 100;
-    gfx->drawRect(x, y, w, h, COL_DIM);
-    gfx->fillRect(x + 1, y + 1, fill > 2 ? fill - 2 : 0, h - 2, color);
-    gfx->fillRect(x + 1 + (fill > 2 ? fill - 2 : 0), y + 1, w - 2 - (fill > 2 ? fill - 2 : 0), h - 2, COL_BG);
-} // Bar
-
 static const char* TempUnitStr()
 {
     return st.tempUnit == "set_units_deg_fahrenheit" ? "F" : "C";
@@ -336,84 +314,195 @@ static const char* SpeedUnitStr()
 } // SpeedUnitStr
 
 // -----
-// Screens
+// Screens (v2 "HMI" look: header tabs, framed panel, arc gauges, cyan accent)
+
+#define PANEL_Y 34
+#define PANEL_H 182
+#define PANEL_BOTTOM (PANEL_Y + PANEL_H)
+
+// Rounded panel frame with a slightly lighter fill
+static void Panel(int x, int y, int w, int h)
+{
+    gfx->fillSmoothRoundRect(x, y, w, h, 10, COL_PANEL, COL_BG);
+    gfx->drawSmoothRoundRect(x, y, 10, 8, w, h, COL_ACCENT, COL_PANEL);
+} // Panel
+
+// 180-degree arc gauge, open side down. 'zones' is a list of (endPercent, colour) pairs.
+struct TArcZone { int endPercent; uint16_t color; };
+
+static void ArcGauge(int cx, int cy, int r, const TArcZone* zones, int nZones, int percent, const char* value, const char* unit, const char* label)
+{
+    // Angles: TFT_eSPI measures from 6 o'clock, clockwise. 90 = 9 o'clock, 270 = 3 o'clock.
+    int startPct = 0;
+    for (int i = 0; i < nZones; i++)
+    {
+        int a0 = 90 + startPct * 180 / 100;
+        int a1 = 90 + zones[i].endPercent * 180 / 100;
+        if (a1 > a0) gfx->drawArc(cx, cy, r, r - 8, a0, a1, zones[i].color, COL_PANEL, false);
+        startPct = zones[i].endPercent;
+    } // for
+
+    // Level indicator: bright arc on top of the zones
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    if (percent > 0)
+    {
+        int a1 = 90 + percent * 180 / 100;
+        gfx->drawArc(cx, cy, r - 1, r - 7, 90, a1, COL_FG, COL_PANEL, false);
+    } // if
+
+    // Tick marks at 25 / 50 / 75 %
+    for (int p = 25; p <= 75; p += 25)
+    {
+        int a = 90 + p * 180 / 100;
+        gfx->drawArc(cx, cy, r + 3, r - 10, a - 1, a + 1, COL_DIM, COL_PANEL, false);
+    } // for
+
+    // Label above, value below
+    gfx->setTextDatum(BC_DATUM);
+    gfx->setTextColor(COL_DIM, COL_PANEL);
+    gfx->drawString(label, cx, cy - r - 4, 2);
+
+    gfx->setTextDatum(TC_DATUM);
+    gfx->setTextColor(COL_FG, COL_PANEL);
+    int vw = gfx->textWidth(value, 4);
+    int uw = gfx->textWidth(unit, 2);
+    int x0 = cx - (vw + 4 + uw) / 2;
+    gfx->setTextDatum(TL_DATUM);
+    gfx->drawString(value, x0, cy + 4, 4);
+    gfx->setTextColor(COL_DIM, COL_PANEL);
+    gfx->drawString(unit, x0 + vw + 4, cy + 10, 2);
+} // ArcGauge
+
+// Horizontal slider: dim track, accent fill and round thumb
+static void Slider(int x, int y, int w, int percent)
+{
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    gfx->fillSmoothRoundRect(x, y, w, 6, 3, COL_DIM, COL_PANEL);
+    int fill = w * percent / 100;
+    if (fill > 6) gfx->fillSmoothRoundRect(x, y, fill, 6, 3, COL_ACCENT, COL_PANEL);
+    gfx->fillSmoothCircle(x + fill, y + 3, 7, COL_ACCENT, COL_PANEL);
+    gfx->fillSmoothCircle(x + fill, y + 3, 3, COL_FG, COL_ACCENT);
+} // Slider
+
+// Small pill-style indicator, lit or dimmed
+static void Chip(int x, int y, int w, const char* text, bool on)
+{
+    gfx->fillSmoothRoundRect(x, y, w, 18, 5, on ? COL_ACCENT : COL_LED_OFF, COL_PANEL);
+    gfx->setTextDatum(MC_DATUM);
+    gfx->setTextColor(on ? COL_FG : COL_DIM, on ? COL_ACCENT : COL_LED_OFF);
+    gfx->drawString(text, x + w / 2, y + 9, 2);
+} // Chip
 
 static void DrawHeader()
 {
     bool busAlive = millis() - lastActivityAt < 2000UL && VanBusRx.GetCount() > 0;
 
-    gfx->fillRect(0, 0, SCREEN_W, HEADER_H, COL_BG);
-    gfx->drawFastHLine(0, HEADER_H - 1, SCREEN_W, COL_DIM);
+    // Header strip
+    gfx->fillSmoothRoundRect(0, 0, SCREEN_W, HEADER_H, 8, COL_PANEL, COL_BG);
+    gfx->drawFastHLine(0, HEADER_H, SCREEN_W, COL_ACCENT);
 
-    gfx->fillCircle(10, HEADER_H / 2 - 1, 5, busAlive ? COL_OK : COL_DIM);
-    Label(20, 6, "VAN", busAlive ? COL_FG : COL_DIM);
+    // Tabs following the current page
+    static const char* const tabNames[N_SCREENS] = { "ENGINE", "MEDIA", "TRIP" };
+    static const int tabX[N_SCREENS] = { 8, 76, 136 };
+    static const int tabW[N_SCREENS] = { 60, 52, 40 };
+    for (int i = 0; i < N_SCREENS; i++)
+    {
+        bool active = i == currentScreen;
+        gfx->setTextDatum(TL_DATUM);
+        gfx->setTextColor(active ? COL_FG : COL_DIM, COL_PANEL);
+        gfx->drawString(tabNames[i], tabX[i], 7, 2);
+        if (active) gfx->fillRect(tabX[i], HEADER_H - 3, tabW[i], 3, COL_ACCENT);
+    } // for
 
-    // Contact key position in the middle
-    String key = st.contactKeyPosition.length() > 0 ? "KEY " + st.contactKeyPosition : "";
-    Field(SCREEN_W / 2, HEADER_H / 2 - 1, 120, 2, MC_DATUM, key.c_str(), COL_DIM);
+    // Bus liveness dot
+    gfx->fillSmoothCircle(196, HEADER_H / 2, 5, busAlive ? COL_OK : COL_DIM, COL_PANEL);
 
-    // Exterior temperature on the right
+    // Contact key position
+    gfx->setTextDatum(ML_DATUM);
+    gfx->setTextColor(COL_DIM, COL_PANEL);
+    gfx->drawString(st.contactKeyPosition.length() > 0 ? st.contactKeyPosition.c_str() : "", 208, HEADER_H / 2, 2);
+
+    // Exterior temperature, right aligned
     String t = st.exteriorTemp.length() > 0 ? st.exteriorTemp + " " + TempUnitStr() : "";
-    Field(SCREEN_W - 6, HEADER_H / 2 - 1, 110, 2, MR_DATUM, t.c_str());
+    gfx->setTextDatum(MR_DATUM);
+    gfx->setTextColor(COL_ACCENT, COL_PANEL);
+    gfx->drawString(t, SCREEN_W - 8, HEADER_H / 2, 2);
 } // DrawHeader
 
 static void DrawFooter()
 {
-    static const char* const names[N_SCREENS] = { "Instruments", "Audio", "Trip" };
-
-    gfx->drawFastHLine(0, FOOTER_Y, SCREEN_W, COL_DIM);
-
-    // Screen indicator dots
     for (int i = 0; i < N_SCREENS; i++)
     {
-        gfx->fillCircle(SCREEN_W / 2 + (i - 1) * 14, FOOTER_Y + 12, 3, i == currentScreen ? COL_ACCENT : COL_DIM);
+        gfx->fillSmoothCircle(SCREEN_W / 2 + (i - 1) * 16, PANEL_BOTTOM + 12, 3, i == currentScreen ? COL_ACCENT : COL_DIM, COL_BG);
     } // for
 
-    Field(6, FOOTER_Y + 12, 120, 2, ML_DATUM, names[currentScreen], COL_DIM);
-
     String ws = "WS " + String(nWebSocketConnections);
-    Field(SCREEN_W - 6, FOOTER_Y + 12, 80, 2, MR_DATUM, ws.c_str(), COL_DIM);
+    gfx->setTextDatum(MR_DATUM);
+    gfx->setTextColor(COL_DIM, COL_BG);
+    gfx->drawString(ws, SCREEN_W - 8, PANEL_BOTTOM + 12, 2);
+
+    gfx->setTextDatum(ML_DATUM);
+    gfx->drawString("tap: next page", 8, PANEL_BOTTOM + 12, 2);
 } // DrawFooter
 
 static void DrawInstruments()
 {
-    // Speed, large 7-segment style digits
-    Label(14, HEADER_H + 8, SpeedUnitStr());
-    Field(14, HEADER_H + 26, 170, 7, TL_DATUM, OrDash(st.vehicleSpeed, "--"));
+    Panel(0, PANEL_Y, SCREEN_W, PANEL_H);
 
-    // RPM
-    Label(200, HEADER_H + 8, "rpm");
-    Field(SCREEN_W - 14, HEADER_H + 26, 110, 6, TR_DATUM, OrDash(st.engineRpm, "---"));
-
-    int y = HEADER_H + 90;
-
-    // Coolant temperature
-    Label(14, y, "Coolant");
-    String cool = st.coolantTemp.length() > 0 ? st.coolantTemp + " " + TempUnitStr() : "--";
-    Field(14, y + 18, 140, 4, TL_DATUM, cool.c_str());
-
-    // Fuel level
-    Label(170, y, "Fuel");
+    // Fuel: red below 13 %, green above
+    static const TArcZone fuelZones[] = { { 13, COL_ZONE_RED }, { 100, COL_ZONE_GREEN } };
     int fuel = st.fuelLevel.length() > 0 ? st.fuelLevel.toInt() : -1;
-    String fuelStr = fuel >= 0 ? String(fuel) + " %" : "--";
-    Field(170, y + 18, 136, 4, TL_DATUM, fuelStr.c_str(), fuel >= 0 && fuel <= 10 ? COL_WARN : COL_FG);
-    Bar(170, y + 46, 136, 10, fuel, fuel >= 0 && fuel <= 10 ? COL_WARN : COL_ACCENT);
+    String fuelStr = fuel >= 0 ? String(fuel) : "--";
+    ArcGauge(80, PANEL_Y + 74, 40, fuelZones, 2, fuel, fuelStr.c_str(), "%", "FUEL");
 
-    y += 66;
+    // Coolant: 50..130 degrees C; blue below 70, green to 110, red above
+    static const TArcZone coolZones[] = { { 25, COL_ZONE_BLUE }, { 75, COL_ZONE_GREEN }, { 100, COL_ZONE_RED } };
+    int coolPct = -1;
+    if (st.coolantTemp.length() > 0) coolPct = (st.coolantTemp.toInt() - 50) * 100 / 80;
+    String coolStr = st.coolantTemp.length() > 0 ? st.coolantTemp : "--";
+    ArcGauge(240, PANEL_Y + 74, 40, coolZones, 3, coolPct, coolStr.c_str(), TempUnitStr(), "COOLANT");
 
-    // Lights and doors summary line
-    String info;
-    if (st.doorOpen == "YES") info += "DOOR OPEN  ";
-    if (st.lights.indexOf("HIGH_BEAM") >= 0) info += "HIGH BEAM  ";
-    else if (st.lights.indexOf("DIPPED_BEAM") >= 0) info += "LOW BEAM  ";
-    if (st.lights.indexOf("FOG") >= 0) info += "FOG  ";
-    if (st.lights.indexOf("INDICATOR_LEFT") >= 0) info += "<  ";
-    if (st.lights.indexOf("INDICATOR_RIGHT") >= 0) info += ">  ";
-    Field(14, y, SCREEN_W - 28, 2, TL_DATUM, info.c_str(), st.doorOpen == "YES" ? COL_WARN : COL_FG);
+    // Speed and engine speed
+    int y = PANEL_Y + 108;
+    gfx->setTextDatum(TL_DATUM);
+    gfx->setTextColor(COL_FG, COL_PANEL);
+    gfx->drawString(OrDash(st.vehicleSpeed, "--"), 14, y, 6);
+    int sw = gfx->textWidth(OrDash(st.vehicleSpeed, "--"), 6);
+    gfx->setTextColor(COL_DIM, COL_PANEL);
+    gfx->drawString(SpeedUnitStr(), 14 + sw + 6, y + 28, 2);
+
+    gfx->setTextDatum(TR_DATUM);
+    gfx->setTextColor(COL_FG, COL_PANEL);
+    gfx->drawString(OrDash(st.engineRpm, "---"), SCREEN_W - 44, y, 6);
+    gfx->setTextDatum(TL_DATUM);
+    gfx->setTextColor(COL_DIM, COL_PANEL);
+    gfx->drawString("rpm", SCREEN_W - 40, y + 28, 2);
+
+    // Status chips
+    int cy = PANEL_BOTTOM - 26;
+    Chip(14, cy, 54, "DOOR", st.doorOpen == "YES");
+    Chip(74, cy, 54, "LOW", st.lights.indexOf("DIPPED_BEAM") >= 0);
+    Chip(134, cy, 54, "HIGH", st.lights.indexOf("HIGH_BEAM") >= 0);
+    Chip(194, cy, 54, "FOG", st.lights.indexOf("FOG") >= 0);
+    Chip(254, cy, 24, "<", st.lights.indexOf("INDICATOR_LEFT") >= 0);
+    Chip(282, cy, 24, ">", st.lights.indexOf("INDICATOR_RIGHT") >= 0);
 } // DrawInstruments
+
+// Simple speaker glyph for the station tile
+static void SpeakerGlyph(int x, int y)
+{
+    gfx->fillRect(x, y + 8, 8, 12, COL_FG);
+    gfx->fillTriangle(x + 8, y + 8, x + 20, y, x + 20, y + 28, COL_FG);
+    gfx->drawArc(x + 22, y + 14, 10, 8, 120, 240, COL_FG, COL_ACCENT, false);
+    gfx->drawArc(x + 22, y + 14, 16, 14, 120, 240, COL_FG, COL_ACCENT, false);
+} // SpeakerGlyph
 
 static void DrawAudio()
 {
+    Panel(0, PANEL_Y, SCREEN_W, PANEL_H);
+
     const char* title =
         st.audioSource == "TUNER" ? "Radio" :
         st.audioSource == "CD" ? "CD player" :
@@ -422,96 +511,120 @@ static void DrawAudio()
         st.audioSource == "NAVIGATION" ? "Navigation" :
         st.headUnitPower == "ON" ? "Head unit" : "Head unit off";
 
-    Field(14, HEADER_H + 8, 200, 4, TL_DATUM, title, COL_ACCENT);
+    // Station tile
+    gfx->fillSmoothRoundRect(14, PANEL_Y + 12, 56, 56, 10, COL_ACCENT, COL_PANEL);
+    SpeakerGlyph(26, PANEL_Y + 26);
+
+    // Title and band / preset
+    gfx->setTextDatum(TL_DATUM);
+    gfx->setTextColor(COL_ACCENT, COL_PANEL);
+    gfx->drawString(title, 82, PANEL_Y + 10, 4);
 
     if (st.audioSource == "TUNER")
     {
-        // Band and preset
         String band = st.tunerBand;
         if (st.tunerMemory.length() > 0 && st.tunerMemory != "-") band += "  P" + st.tunerMemory;
-        Field(SCREEN_W - 14, HEADER_H + 8, 100, 4, TR_DATUM, band.c_str());
+        gfx->setTextDatum(TR_DATUM);
+        gfx->setTextColor(COL_DIM, COL_PANEL);
+        gfx->drawString(band, SCREEN_W - 14, PANEL_Y + 16, 2);
 
-        // Frequency
-        Field(14, HEADER_H + 44, 230, 7, TL_DATUM, OrDash(st.frequency, "---.-"));
-        Field(SCREEN_W - 14, HEADER_H + 70, 60, 4, TR_DATUM, OrDash(st.frequencyUnit, ""));
+        // Frequency and unit
+        gfx->setTextDatum(TL_DATUM);
+        gfx->setTextColor(COL_FG, COL_PANEL);
+        gfx->drawString(OrDash(st.frequency, "---.-"), 82, PANEL_Y + 38, 6);
+        int fw = gfx->textWidth(OrDash(st.frequency, "---.-"), 6);
+        gfx->setTextColor(COL_DIM, COL_PANEL);
+        gfx->drawString(OrDash(st.frequencyUnit, ""), 82 + fw + 8, PANEL_Y + 66, 2);
 
-        // RDS text
-        Field(14, HEADER_H + 104, SCREEN_W - 28, 4, TL_DATUM, OrDash(st.rdsText, ""));
+        // RDS name
+        gfx->setTextColor(COL_FG, COL_PANEL);
+        gfx->drawString(OrDash(st.rdsText, ""), 14, PANEL_Y + 92, 4);
     }
     else if (st.audioSource == "CD" || st.audioSource == "CD_CHANGER")
     {
-        Label(14, HEADER_H + 44, "Track");
-        Field(14, HEADER_H + 62, 120, 6, TL_DATUM, OrDash(st.cdTrack, "--"));
-        Label(170, HEADER_H + 44, "Time");
-        Field(170, HEADER_H + 62, 136, 6, TL_DATUM, OrDash(st.cdTrackTime, "--:--"));
-    }
-    else
-    {
-        Field(14, HEADER_H + 44, SCREEN_W - 28, 7, TL_DATUM, "");
-        Field(14, HEADER_H + 104, SCREEN_W - 28, 4, TL_DATUM, "");
+        gfx->setTextDatum(TL_DATUM);
+        gfx->setTextColor(COL_FG, COL_PANEL);
+        gfx->drawString(OrDash(st.cdTrackTime, "--:--"), 82, PANEL_Y + 38, 6);
+        gfx->setTextColor(COL_DIM, COL_PANEL);
+        gfx->drawString("Track", 14, PANEL_Y + 96, 2);
+        gfx->setTextColor(COL_FG, COL_PANEL);
+        gfx->drawString(OrDash(st.cdTrack, "--"), 70, PANEL_Y + 90, 4);
     } // if
 
-    // Volume
-    int y = HEADER_H + 140;
-    Label(14, y, "Volume");
+    // Volume slider
     int vol = st.volume.length() > 0 ? st.volume.toInt() : -1;
-    Field(SCREEN_W - 14, y, 60, 2, TR_DATUM, vol >= 0 ? st.volume.c_str() : "--");
-    Bar(14, y + 18, SCREEN_W - 28, 10, vol >= 0 ? vol * 100 / 30 : 0, COL_ACCENT);
+    gfx->setTextDatum(TL_DATUM);
+    gfx->setTextColor(COL_DIM, COL_PANEL);
+    gfx->drawString("Volume", 14, PANEL_Y + 128, 2);
+    gfx->setTextDatum(TR_DATUM);
+    gfx->setTextColor(COL_FG, COL_PANEL);
+    gfx->drawString(vol >= 0 ? st.volume.c_str() : "--", SCREEN_W - 14, PANEL_Y + 124, 4);
+    Slider(14, PANEL_Y + 156, SCREEN_W - 28 - 50, vol >= 0 ? vol * 100 / 30 : 0);
 } // DrawAudio
+
+static void TripRow(int x, int y, const char* label, const char* value, uint16_t color = COL_FG)
+{
+    gfx->setTextDatum(TL_DATUM);
+    gfx->setTextColor(COL_ACCENT, COL_PANEL);
+    gfx->drawString(label, x, y, 2);
+    gfx->setTextColor(color, COL_PANEL);
+    gfx->drawString(value, x, y + 18, 4);
+} // TripRow
 
 static void DrawTrip()
 {
-    int y = HEADER_H + 8;
+    Panel(0, PANEL_Y, SCREEN_W, PANEL_H);
 
-    Label(14, y, "Odometer");
     String odo = st.odometer.length() > 0 ? st.odometer + " " + DistanceUnitStr() : "--";
-    Field(14, y + 18, SCREEN_W - 28, 4, TL_DATUM, odo.c_str());
+    TripRow(14, PANEL_Y + 10, "Odometer", odo.c_str());
 
-    y += 50;
-    Label(14, y, "Inst. consumption");
-    Field(14, y + 18, 140, 4, TL_DATUM, OrDash(st.instConsumption, "--"));
-
-    Label(170, y, "Range");
     String dte = st.distanceToEmpty.length() > 0 ? st.distanceToEmpty + " " + DistanceUnitStr() : "--";
-    Field(170, y + 18, 136, 4, TL_DATUM, dte.c_str());
+    TripRow(170, PANEL_Y + 10, "Range", dte.c_str());
 
-    y += 50;
-    Label(14, y, "Doors");
+    TripRow(14, PANEL_Y + 62, "Inst. consumption", OrDash(st.instConsumption, "--"));
+
     const char* doors =
         st.doorOpen == "YES" ? "OPEN" :
         st.doorsLocked == "YES" ? "LOCKED" :
         st.doorsLocked == "NO" ? "UNLOCKED" : "--";
-    Field(14, y + 18, 140, 4, TL_DATUM, doors, st.doorOpen == "YES" ? COL_WARN : COL_FG);
+    TripRow(170, PANEL_Y + 62, "Doors", doors, st.doorOpen == "YES" ? COL_WARN : COL_FG);
 
-    Label(170, y, "Lights");
     String lights = st.lights;
     lights.replace("_", " ");
     lights.trim();
-    Field(170, y + 18, 136, 2, TL_DATUM, lights.length() > 0 ? lights.c_str() : "OFF");
+    gfx->setTextDatum(TL_DATUM);
+    gfx->setTextColor(COL_ACCENT, COL_PANEL);
+    gfx->drawString("Lights", 14, PANEL_Y + 114, 2);
+    gfx->setTextColor(COL_FG, COL_PANEL);
+    gfx->drawString(lights.length() > 0 ? lights.c_str() : "OFF", 14, PANEL_Y + 132, 2);
 
-    y += 50;
-    Label(14, y, "Street");
-    Field(14, y + 18, SCREEN_W - 28, 2, TL_DATUM, OrDash(st.currentStreet, ""));
+    gfx->setTextColor(COL_ACCENT, COL_PANEL);
+    gfx->drawString("Street", 14, PANEL_Y + 152, 2);
+    gfx->setTextColor(COL_FG, COL_PANEL);
+    gfx->drawString(OrDash(st.currentStreet, ""), 70, PANEL_Y + 152, 2);
 } // DrawTrip
 
-// Simple word wrap for the popup text, font 2 (approx. 8 px per character average)
+// Popup card with a warning triangle and word-wrapped message
 static void DrawPopup()
 {
-    const int margin = 16;
-    const int w = SCREEN_W - 2 * margin;
-    const int h = 110;
-    const int x = margin;
-    const int y = (SCREEN_H - h) / 2;
+    const int x = 18, y = 56, w = SCREEN_W - 36, h = 118;
 
-    gfx->fillRoundRect(x, y, w, h, 8, COL_BG);
-    gfx->drawRoundRect(x, y, w, h, 8, COL_WARN);
-    gfx->drawRoundRect(x + 1, y + 1, w - 2, h - 2, 8, COL_WARN);
+    gfx->fillSmoothRoundRect(x, y, w, h, 12, COL_PANEL, COL_BG);
+    gfx->drawSmoothRoundRect(x, y, 12, 10, w, h, COL_WARN, COL_PANEL);
 
+    // Warning triangle
+    int tx = x + 34, ty = y + h / 2 - 6;
+    gfx->fillTriangle(tx, ty - 22, tx - 24, ty + 18, tx + 24, ty + 18, COL_WARN);
+    gfx->fillTriangle(tx, ty - 14, tx - 17, ty + 14, tx + 17, ty + 14, COL_PANEL);
+    gfx->setTextDatum(MC_DATUM);
+    gfx->setTextColor(COL_WARN, COL_PANEL);
+    gfx->drawString("!", tx, ty + 2, 4);
+
+    // Message, wrapped to the space right of the icon
     gfx->setTextDatum(TL_DATUM);
-    gfx->setTextColor(COL_FG, COL_BG);
-
+    gfx->setTextColor(COL_FG, COL_PANEL);
     String msg = st.popupMessage;
-    const int maxChars = 30;
+    const int maxChars = 24;
     int line = 0;
     while (msg.length() > 0 && line < 4)
     {
@@ -528,13 +641,13 @@ static void DrawPopup()
         {
             msg = "";
         } // if
-        gfx->drawString(part, x + 12, y + 14 + line * 20, 2);
+        gfx->drawString(part, x + 74, y + 22 + line * 20, 2);
         line++;
     } // while
 
-    gfx->setTextColor(COL_DIM, COL_BG);
+    gfx->setTextColor(COL_DIM, COL_PANEL);
     gfx->setTextDatum(BC_DATUM);
-    gfx->drawString("tap to dismiss", SCREEN_W / 2, y + h - 6, 2);
+    gfx->drawString("tap to dismiss", x + w / 2, y + h - 6, 2);
 } // DrawPopup
 
 static bool PopupActive()
