@@ -50,7 +50,10 @@ extern unsigned long lastActivityAt;
 #define COL_OK TFT_GREEN
 
 static TFT_eSPI tft;
-static SPIClass touchSpi(HSPI);
+
+// The TFT is driven on the HSPI port (see -DUSE_HSPI_PORT in the build script), so the touch controller gets
+// the other one. Arduino's SPIClass handles the FSPI port correctly; only TFT_eSPI's direct register access does not.
+static SPIClass touchSpi(FSPI);
 static XPT2046_Touchscreen touch(TFT_TOUCH_CS, TFT_TOUCH_IRQ);
 
 enum TDisplayScreen

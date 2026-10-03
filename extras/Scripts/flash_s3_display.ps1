@@ -33,6 +33,10 @@ $tftFlags = @(
     "-DUSE_TFT_DISPLAY",
     "-DUSER_SETUP_LOADED=1",
     "-DILI9341_DRIVER=1",
+    # On the ESP32-S3 with ESP32 core 3.x, TFT_eSPI 2.5.43 computes a zero register base for its default (FSPI)
+    # port and crashes with StoreProhibited in init(). Using the HSPI port avoids that. The touch controller is
+    # therefore put on FSPI in Display.ino.
+    "-DUSE_HSPI_PORT",
     "-DTFT_WIDTH=240", "-DTFT_HEIGHT=320",
     "-DTFT_SCLK=12", "-DTFT_MOSI=11", "-DTFT_MISO=14",
     "-DTFT_CS=10", "-DTFT_DC=9", "-DTFT_RST=8",
