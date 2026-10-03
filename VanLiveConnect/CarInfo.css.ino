@@ -1,4 +1,3 @@
-
 const char carInfo_css[] PROGMEM = R"=====(
 @font-face
 {
@@ -6,6 +5,21 @@ const char carInfo_css[] PROGMEM = R"=====(
   font-family:Peugeot-New;
   src: url(PeugeotNewRegular.woff) format('woff');
 }
+
+/*
+ * "HMI" restyle: dark navy panels, cyan accent, soft glows.
+ *
+ * All colour variables below are also set at run-time by MFD.js (setColorTheme / setLuminosity) for the
+ * blue / orange / gold palettes and the light / dark themes, so every rule here derives from them:
+ *   --main-color              primary text
+ *   --background-color        page background
+ *   --gradient-high-color     accent (cyan for the blue palette)
+ *   --led-off-color           inactive indicator fill
+ *   --notification-color      popup fill
+ *   --highlight-color         touch/IR highlight
+ *   --selected-element-color  text on selected (accent-filled) elements, panel fill tint
+ *   --disabled-element-color  greyed-out items
+ */
 
 /* Default: "dark-theme" background with light-blue text */
 :root
@@ -19,6 +33,15 @@ const char carInfo_css[] PROGMEM = R"=====(
   --selected-element-color:rgb(41,55,74);
   --disabled-element-color:rgb(67,82,105);
   --scale-factor:1;
+
+  /* Derived design tokens (not touched by MFD.js) */
+  --accent:var(--gradient-high-color);
+  --panel-fill:rgba(6,12,26,0.62);
+  --panel-fill-2:rgba(12,22,44,0.55);
+  --panel-radius:18px;
+  --control-radius:12px;
+  --frame-width:2px;
+  --glow-soft:0 0 18px rgba(0,0,0,0.0);
 }
 body
 {
@@ -37,12 +60,40 @@ body
   transform:scale(var(--scale-factor));
   transform-origin: 0 0;
 }
+
+/* Panel chrome: the two main panels get a framed, tinted, softly glowing surface.
+   Uses box-shadow (not border) so the absolutely positioned children do not move. */
+#small_panel, #large_panel
+{
+  border-radius:var(--panel-radius);
+  background:
+    linear-gradient(180deg, var(--panel-fill-2) 0%, var(--panel-fill) 45%, var(--panel-fill) 100%);
+  box-shadow:
+    inset 0 0 0 var(--frame-width) var(--accent),
+    inset 0 0 0 calc(var(--frame-width) + 1px) rgba(255,255,255,0.06),
+    inset 0 40px 60px -40px rgba(255,255,255,0.08),
+    0 0 28px rgba(0,0,0,0.55);
+}
+#small_panel
+{
+  box-shadow:
+    inset 0 0 0 var(--frame-width) var(--accent),
+    inset 0 40px 60px -40px rgba(255,255,255,0.08),
+    0 0 28px rgba(0,0,0,0.55);
+  clip-path:inset(0 round var(--panel-radius));
+}
+#large_panel
+{
+  clip-path:inset(0 round var(--panel-radius));
+}
+
 .languageIcon
 {
   position:relative;
   font-size:30px;
-  border-width:4px;
+  border-width:3px;
   border-style:solid;
+  border-color:var(--accent);
   border-radius:30px;
   padding-left: 5px;
   padding-right: 5px;
@@ -53,18 +104,22 @@ body
   text-align:right;
   overflow:hidden;
 }
+
+/* Large numeric read-outs: bright with a soft accent halo */
 .dseg7
 {
   position:absolute;
   text-align:right;
   font-family:Peugeot-New;
   line-height:1.000000;
+  text-shadow:0 0 14px var(--accent);
 }
 .dseg14
 {
   position:absolute;
   font-family:Peugeot-New;
   line-height:1.000000;
+  text-shadow:0 0 12px var(--accent);
 }
 .dots
 {
@@ -73,6 +128,7 @@ body
   font-family:Peugeot-New;
   line-height:1.000000;
   font-size:55px;
+  text-shadow:0 0 10px var(--accent);
 }
 
 /* Style the "LED" elements */
@@ -81,7 +137,7 @@ body
   position:absolute;
   overflow:hidden;
   color:var(--selected-element-color);
-  border-radius:5px;
+  border-radius:8px;
   text-align:center;
   font-size:30px;
   font-weight:bold;
@@ -89,32 +145,43 @@ body
 }
 .ledOn
 {
-  background-color:var(--main-color);
+  color:#ffffff;
+  background:linear-gradient(180deg, var(--accent) 0%, var(--accent) 100%);
+  box-shadow:0 0 12px var(--accent), inset 0 0 0 1px rgba(255,255,255,0.25);
 }
 .ledOff
 {
   background-color:var(--led-off-color);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,0.05);
 }
 .ledOnOrange
 {
+  color:#ffffff;
   background-color:rgb(255,144,1);
+  box-shadow:0 0 12px rgb(255,144,1);
 }
 .ledOnRed
 {
-  background-color:red;
+  color:#ffffff;
+  background-color:rgb(255,59,48);
+  box-shadow:0 0 12px rgb(255,59,48);
 }
 .ledOnGreen
 {
-  background-color:rgb(119,217,64);
+  color:#ffffff;
+  background-color:rgb(60,214,110);
+  box-shadow:0 0 12px rgb(60,214,110);
 }
 .ledOnBlue
 {
+  color:#ffffff;
   background-color:rgb(87,89,247);
+  box-shadow:0 0 12px rgb(87,89,247);
 }
 .ledActive
 {
-  border-top:25px solid var(--main-color);
-  border-bottom:25px solid var(--main-color);
+  border-top:25px solid var(--accent);
+  border-bottom:25px solid var(--accent);
 }
 
 /* Style the "glow" effect */
@@ -130,7 +197,7 @@ body
     /* Alternative (more orange) color: #e66c00 */
     text-shadow: 0 0 10px #fff, 0 0 20px #fff, 0 0 30px #e60073, 0 0 40px #e60073, 0 0 50px #e60073, 0 0 60px #e60073, 0 0 70px #e60073;
   }
-  
+
   to
   {
     /* Alternative (more orange) color: #ff6e4d */
@@ -150,7 +217,7 @@ body
   {
     text-shadow: 0 0 10px #fff, 0 0 20px #fff, 0 0 30px #0f00e6, 0 0 40px #0f00e6, 0 0 50px #0f00e6, 0 0 60px #0f00e6, 0 0 70px #0f00e6;
   }
-  
+
   to
   {
     text-shadow: 0 0 20px #fff, 0 0 30px #4d91ff, 0 0 40px #4d91ff, 0 0 50px #4d91ff, 0 0 60px #4d91ff, 0 0 70px #4d91ff, 0 0 80px #4d91ff;
@@ -166,8 +233,10 @@ body
 }
 .iconBorder
 {
-  border:5px solid;
+  border:3px solid var(--accent);
   border-radius:15px;
+  background:var(--panel-fill-2);
+  box-shadow:0 0 14px rgba(0,0,0,0.4);
 }
 .iconSmall
 {
@@ -211,79 +280,91 @@ body
 }
 .tabTop
 {
-  border-top:5px solid var(--main-color);
-  border-left:5px solid var(--main-color);
-  border-right:5px solid var(--main-color);
+  border-top:3px solid var(--accent);
+  border-left:3px solid var(--accent);
+  border-right:3px solid var(--accent);
   border-top-left-radius:15px;
   border-top-right-radius:15px;
+  background:var(--panel-fill-2);
 }
 .tabBottom
 {
   height:70px;
-  border-bottom:5px solid var(--main-color);
-  border-left:5px solid var(--main-color);
-  border-right:5px solid var(--main-color);
+  border-bottom:3px solid var(--accent);
+  border-left:3px solid var(--accent);
+  border-right:3px solid var(--accent);
   border-bottom-left-radius:15px;
   border-bottom-right-radius:15px;
   line-height:1.5;
+  background:var(--panel-fill-2);
 }
 .tabLeft
 {
   position:absolute;
   height:60px;
-  border-top:5px solid var(--main-color);
-  border-left:5px solid var(--main-color);
-  border-bottom:5px solid var(--main-color);
+  border-top:3px solid var(--accent);
+  border-left:3px solid var(--accent);
+  border-bottom:3px solid var(--accent);
   border-top-left-radius:15px;
   border-bottom-left-radius:15px;
   line-height:1.4;
+  background:var(--panel-fill-2);
 }
 
-/* Style of the buttons inside the tab */
+/* Style of the buttons inside the tab: flat tabs with an accent underline when active */
 .tab button
 {
   position:absolute;
-  background:none;
+  background:var(--panel-fill-2);
   color:var(--main-color);
+  font-family:Peugeot-New,Arial,Helvetica,Sans-Serif;
   font-size:50px;
   line-height:1.0;
   white-space:nowrap;
   outline: none;
-  border-top:5px solid var(--main-color);
-  border-left:5px solid var(--main-color);
-  border-right:5px solid var(--main-color);
+  border-top:3px solid var(--accent);
+  border-left:3px solid var(--accent);
+  border-right:3px solid var(--accent);
   border-bottom:none;
   border-top-left-radius:15px;
   border-top-right-radius:15px;
+  opacity:0.75;
 }
 .tab button.active
 {
-  color:var(--selected-element-color);
-  background-color:var(--main-color);
+  color:#ffffff;
+  background:linear-gradient(180deg, var(--accent) 0%, var(--accent) 100%);
+  box-shadow:0 0 14px var(--accent);
+  opacity:1;
 }
 
 /* Style the tab content */
 .tabContent
 {
   display:none;
-  border:5px solid;
+  border:3px solid var(--accent);
   border-radius:15px;
   position:absolute;
+  background:linear-gradient(180deg, var(--panel-fill-2), var(--panel-fill));
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,0.05), 0 0 18px rgba(0,0,0,0.45);
 }
 .tabActive
 {
-  color:var(--selected-element-color);
-  background-color:var(--main-color);
+  color:#ffffff;
+  background-color:var(--accent);
+  box-shadow:0 0 14px var(--accent);
 }
 .horizontalLine
 {
   position:absolute;
-  border-top:5px solid;
+  border-top:3px solid var(--accent);
+  opacity:0.7;
 }
 .verticalLine
 {
   position:absolute;
-  border-left:5px solid;
+  border-left:3px solid var(--accent);
+  opacity:0.7;
 }
 .centerAligned
 {
@@ -299,14 +380,17 @@ body
 .notificationPopup
 {
   background-color:var(--notification-color);
-  border:5px solid;
-  border-radius:15px;
+  border:3px solid var(--accent);
+  border-radius:20px;
   left:55px;
   top:200px;
   width:850px;
   height:200px;
   display:none;
   font-size:40px;
+  box-shadow:0 0 30px var(--accent), 0 20px 50px rgba(0,0,0,0.6);
+  backdrop-filter:blur(6px);
+  -webkit-backdrop-filter:blur(6px);
 }
 .messagePopupArea
 {
@@ -326,8 +410,10 @@ body
 .highlight
 {
   display:none;
-  border:12px solid;
+  border:12px solid var(--accent);
+  border-radius:16px;
   background-color:var(--highlight-color);
+  box-shadow:0 0 24px var(--accent);
 }
 .show
 {
@@ -346,8 +432,8 @@ body
 .gaugeBox
 {
   fill-opacity:0;
-  stroke-width:8;
-  stroke:var(--main-color);
+  stroke-width:6;
+  stroke:var(--accent);
 }
 .gaugeBoxDiv
 {
@@ -381,29 +467,35 @@ body
 .menuTitleLine
 {
   line-height:120px;
+  color:var(--accent);
+  letter-spacing:1px;
+  text-shadow:0 0 12px var(--accent);
 }
 .button
 {
   overflow:hidden;
-  border:5px solid;
-  border-radius:15px;
-  border-color:var(--disabled-element-color);
+  border:3px solid var(--disabled-element-color);
+  border-radius:var(--control-radius);
+  background:linear-gradient(180deg, var(--panel-fill-2), var(--panel-fill));
   text-align:center;
   font-size:35px;
   line-height:1.1;
   margin:auto;
   width:700px; /* Default, e.g. for items in a menu */
   padding:10px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 14px rgba(0,0,0,0.35);
 }
 .buttonSelected
 {
-  color:var(--selected-element-color);
-  background-color:var(--main-color);
-  border:5px solid var(--main-color);
+  color:#ffffff;
+  background:linear-gradient(180deg, var(--accent) 0%, var(--accent) 100%);
+  border:3px solid var(--accent);
+  box-shadow:0 0 18px var(--accent), inset 0 0 0 1px rgba(255,255,255,0.25);
 }
 .buttonDisabled
 {
   color:var(--disabled-element-color);
+  box-shadow:none;
 }
 .buttonBar
 {
@@ -438,8 +530,10 @@ body
   padding-right:5px;
 
   /* Invert foreground and background color */
-  color:var(--selected-element-color);
-  background-color:var(--main-color);
+  color:#ffffff;
+  background-color:var(--accent);
+  border-radius:6px;
+  box-shadow:0 0 10px var(--accent);
 }
 .tickBox
 {
@@ -465,8 +559,10 @@ body
   width:160px;
   height:140px;
   line-height:1;
-  border:5px solid;
-  border-radius:15px;
+  border:3px solid var(--accent);
+  border-radius:20px;
+  background:var(--panel-fill-2);
+  box-shadow:0 0 16px rgba(0,0,0,0.4);
   display:none;
   left:600px;
   top:140px;
@@ -480,8 +576,9 @@ body
   width:160px;
   height:140px;
   line-height:1;
-  border:5px solid;
-  border-radius:15px;
+  border:3px solid var(--accent);
+  border-radius:20px;
+  background:var(--panel-fill-2);
   display:none;
   left:600px;
   top:35px;
@@ -494,6 +591,7 @@ body
   width:140px;
   font-size:28px;
   line-height:1.5;
+  opacity:0.8;
 }
 .tripComputerPopupTag
 {
@@ -501,6 +599,7 @@ body
   top:170px;
   font-size:28px;
   text-align:center;
+  opacity:0.8;
 }
 
 /* Doors open icon */
@@ -557,6 +656,7 @@ body
   top:110px;
   width:930px;
   text-align:left;
+  color:var(--accent);
 }
 .satNavShowCharacters
 {
@@ -585,6 +685,7 @@ body
   text-align:left;
   font-size:32px;
   line-height:1.7;
+  color:var(--accent);
 }
 .satNavStreetTag
 {
@@ -594,6 +695,7 @@ body
   text-align:left;
   font-size:32px;
   line-height:1.7;
+  color:var(--accent);
 }
 .satNavNumberTag
 {
@@ -603,6 +705,7 @@ body
   text-align:left;
   font-size:32px;
   line-height:1.7;
+  color:var(--accent);
 }
 .satNavCompassNeedle
 {
@@ -657,6 +760,7 @@ body
   text-align:left;
   font-size:35px;
   line-height:1.5;
+  color:var(--accent);
 }
 .satNavEntryExistsTag
 {
