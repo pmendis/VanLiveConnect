@@ -61,7 +61,11 @@ unit, so functions are declared across files via forward declarations at the top
 | `MFD.html.ino`, `MFD.js.ino`, `CarInfo.css.ino`, `fa-all.css.ino`, `*.woff.ino`, `jquery-3.5.1.min.js.ino` | Web UI embedded as `PROGMEM` raw string literals. `MFD.js.ino` (~7200 lines) holds all display logic. |
 | `data/` | Gzipped copies of the same web assets for SPIFFS/LittleFS serving. |
 
-`extras/` has schematics, screenshots, Android setup images, and IDE helper scripts. `README.md` is extensive
+| `Display.ino` | Optional on-board 2.8" ILI9341 TFT + XPT2046 touch (branch `feature/s3-display`, ESP32-S3). Compiled only with `-DUSE_TFT_DISPLAY`. Taps the JSON stream via `DisplayOnJson()` called from `SendJsonOnWebSocket()`; three touch-cycled screens (instruments, audio, trip) plus notification popup. Pins and TFT_eSPI defines: `Config.h` "TFT display" section and `extras/Scripts/flash_s3_display.ps1`. |
+
+`extras/` has schematics, screenshots, Android setup images, and IDE helper scripts.
+`extras/Scripts/flash_s3_display.ps1` builds/uploads the ESP32-S3 display variant (TFT_eSPI is configured
+through compiler defines, so this script is the single source of truth for the TFT pins). `README.md` is extensive
 and is the primary user documentation.
 
 ## Data flow

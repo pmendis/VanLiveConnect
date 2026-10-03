@@ -17,6 +17,11 @@ extern int16_t satnavServiceListSize;
 void PrintJsonText(const char* jsonBuffer);
 void ResetPacketPrevData();
 
+#ifdef USE_TFT_DISPLAY
+// Defined in Display.ino
+void DisplayOnJson(const char* json);
+#endif // USE_TFT_DISPLAY
+
 // Defined in OriginalMfd.ino
 extern uint8_t mfdLanguage;
 void NoPopup();
@@ -273,6 +278,11 @@ bool SendJsonOnWebSocket(const char* json, bool saveForLater, bool isTestMessage
 {
     if (json == 0) return true;
     if (strlen(json) <= 0) return true;
+
+  #ifdef USE_TFT_DISPLAY
+    // Also show on the on-board TFT, whether or not a browser is connected
+    if (! isTestMessage) DisplayOnJson(json);
+  #endif // USE_TFT_DISPLAY
 
     uint32_t ids[2];
     int n = 0;
