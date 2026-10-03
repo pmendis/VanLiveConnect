@@ -52,6 +52,13 @@ extern unsigned long lastActivityAt;
 
 static TFT_eSPI tft;
 
+// All page drawing goes into a full-screen off-screen sprite (allocated in PSRAM), which is then pushed to the
+// panel in one go. That avoids the visible flicker of clearing and redrawing fields directly on the panel.
+// If the sprite cannot be allocated, drawing falls back to the panel itself.
+static TFT_eSprite spr(&tft);
+static bool useSprite = false;
+static TFT_eSPI* gfx = &tft;  // Points to 'spr' when the sprite is in use
+
 // -----
 // XPT2046 touch controller, bit-banged SPI
 
@@ -289,18 +296,18 @@ static const char* OrDash(const String& s, const char* dash = "--")
 // Draw a text field that overwrites its previous content (via text padding)
 static void Field(int x, int y, int w, int font, uint8_t datum, const char* text, uint16_t color = COL_FG)
 {
-    tft.setTextDatum(datum);
-    tft.setTextPadding(w);
-    tft.setTextColor(color, COL_BG);
-    tft.drawString(text, x, y, font);
-    tft.setTextPadding(0);
+    gfx->setTextDatum(datum);
+    gfx->setTextPadding(w);
+    gfx->setTextColor(color, COL_BG);
+    gfx->drawString(text, x, y, font);
+    gfx->setTextPadding(0);
 } // Field
 
 static void Label(int x, int y, const char* text, uint16_t color = COL_DIM)
 {
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(color, COL_BG);
-    tft.drawString(text, x, y, 2);
+    gfx->setTextDatum(TL_DATUM);
+    gfx->setTextColor(color, COL_BG);
+    gfx->drawString(text, x, y, 2);
 } // Label
 
 static void Bar(int x, int y, int w, int h, int percent, uint16_t color)
@@ -308,9 +315,9 @@ static void Bar(int x, int y, int w, int h, int percent, uint16_t color)
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
     int fill = w * percent / 100;
-    tft.drawRect(x, y, w, h, COL_DIM);
-    tft.fillRect(x + 1, y + 1, fill > 2 ? fill - 2 : 0, h - 2, color);
-    tft.fillRect(x + 1 + (fill > 2 ? fill - 2 : 0), y + 1, w - 2 - (fill > 2 ? fill - 2 : 0), h - 2, COL_BG);
+    gfx->drawRect(x, y, w, h, COL_DIM);
+    gfx->fillRect(x + 1, y + 1, fill > 2 ? fill - 2 : 0, h - 2, color);
+    gfx->fillRect(x + 1 + (fill > 2 ? fill - 2 : 0), y + 1, w - 2 - (fill > 2 ? fill - 2 : 0), h - 2, COL_BG);
 } // Bar
 
 static const char* TempUnitStr()
@@ -335,10 +342,10 @@ static void DrawHeader()
 {
     bool busAlive = millis() - lastActivityAt < 2000UL && VanBusRx.GetCount() > 0;
 
-    tft.fillRect(0, 0, SCREEN_W, HEADER_H, COL_BG);
-    tft.drawFastHLine(0, HEADER_H - 1, SCREEN_W, COL_DIM);
+    gfx->fillRect(0, 0, SCREEN_W, HEADER_H, COL_BG);
+    gfx->drawFastHLine(0, HEADER_H - 1, SCREEN_W, COL_DIM);
 
-    tft.fillCircle(10, HEADER_H / 2 - 1, 5, busAlive ? COL_OK : COL_DIM);
+    gfx->fillCircle(10, HEADER_H / 2 - 1, 5, busAlive ? COL_OK : COL_DIM);
     Label(20, 6, "VAN", busAlive ? COL_FG : COL_DIM);
 
     // Contact key position in the middle
@@ -354,12 +361,12 @@ static void DrawFooter()
 {
     static const char* const names[N_SCREENS] = { "Instruments", "Audio", "Trip" };
 
-    tft.drawFastHLine(0, FOOTER_Y, SCREEN_W, COL_DIM);
+    gfx->drawFastHLine(0, FOOTER_Y, SCREEN_W, COL_DIM);
 
     // Screen indicator dots
     for (int i = 0; i < N_SCREENS; i++)
     {
-        tft.fillCircle(SCREEN_W / 2 + (i - 1) * 14, FOOTER_Y + 12, 3, i == currentScreen ? COL_ACCENT : COL_DIM);
+        gfx->fillCircle(SCREEN_W / 2 + (i - 1) * 14, FOOTER_Y + 12, 3, i == currentScreen ? COL_ACCENT : COL_DIM);
     } // for
 
     Field(6, FOOTER_Y + 12, 120, 2, ML_DATUM, names[currentScreen], COL_DIM);
@@ -496,12 +503,12 @@ static void DrawPopup()
     const int x = margin;
     const int y = (SCREEN_H - h) / 2;
 
-    tft.fillRoundRect(x, y, w, h, 8, COL_BG);
-    tft.drawRoundRect(x, y, w, h, 8, COL_WARN);
-    tft.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 8, COL_WARN);
+    gfx->fillRoundRect(x, y, w, h, 8, COL_BG);
+    gfx->drawRoundRect(x, y, w, h, 8, COL_WARN);
+    gfx->drawRoundRect(x + 1, y + 1, w - 2, h - 2, 8, COL_WARN);
 
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(COL_FG, COL_BG);
+    gfx->setTextDatum(TL_DATUM);
+    gfx->setTextColor(COL_FG, COL_BG);
 
     String msg = st.popupMessage;
     const int maxChars = 30;
@@ -521,13 +528,13 @@ static void DrawPopup()
         {
             msg = "";
         } // if
-        tft.drawString(part, x + 12, y + 14 + line * 20, 2);
+        gfx->drawString(part, x + 12, y + 14 + line * 20, 2);
         line++;
     } // while
 
-    tft.setTextColor(COL_DIM, COL_BG);
-    tft.setTextDatum(BC_DATUM);
-    tft.drawString("tap to dismiss", SCREEN_W / 2, y + h - 6, 2);
+    gfx->setTextColor(COL_DIM, COL_BG);
+    gfx->setTextDatum(BC_DATUM);
+    gfx->drawString("tap to dismiss", SCREEN_W / 2, y + h - 6, 2);
 } // DrawPopup
 
 static bool PopupActive()
@@ -537,14 +544,10 @@ static bool PopupActive()
 
 static void Redraw()
 {
-    if (fullRedraw)
-    {
-        tft.fillScreen(COL_BG);
-        DrawHeader();
-        DrawFooter();
-    } // if
+    if (useSprite) spr.fillSprite(COL_BG);
+    else if (fullRedraw) tft.fillScreen(COL_BG);
 
-    if (! PopupActive())
+    if (useSprite || ! PopupActive())
     {
         DrawHeader();
 
@@ -555,11 +558,11 @@ static void Redraw()
             case SCR_TRIP: DrawTrip(); break;
         } // switch
         DrawFooter();
-    }
-    else
-    {
-        DrawPopup();
     } // if
+
+    if (PopupActive()) DrawPopup();
+
+    if (useSprite) spr.pushSprite(0, 0);
 
     fullRedraw = false;
     dirty = false;
@@ -609,6 +612,13 @@ void SetupDisplay()
     tft.drawString("http://" IP_ADDR "/MFD.html", SCREEN_W / 2, 170, 2);
   #endif // WIFI_AP_MODE
     tft.drawString("Waiting for VAN bus data...", SCREEN_W / 2, 205, 2);
+
+    // Full-screen 16-bit sprite: 320 x 240 x 2 = 150 KB, goes to PSRAM
+    spr.setColorDepth(16);
+    useSprite = spr.createSprite(SCREEN_W, SCREEN_H) != nullptr;
+    gfx = useSprite ? (TFT_eSPI*)&spr : &tft;
+    Serial.printf_P(PSTR("TFT sprite buffer: %s\n"), useSprite ? "allocated" : "NOT allocated, drawing directly");
+    if (! useSprite) DisplayStatusLine("no sprite buffer");
 
     // Keep the splash until the first redraw is due
     lastRedrawAt = millis() + 2500;
