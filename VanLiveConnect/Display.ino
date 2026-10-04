@@ -285,6 +285,7 @@ enum TDisplayPage
 }; // enum TDisplayPage
 
 static const char* const pageTabs[N_PAGES] = { "CLK", "ENG", "CHK", "MED", "TRP", "NAV", "AC", "SYS" };
+static int tabX0[N_PAGES] = { 0 }, tabX1[N_PAGES] = { 0 };  // Header tab hit zones, filled in by DrawHeader
 
 enum TPopupKind
 {
@@ -307,9 +308,8 @@ static unsigned long lastRedrawAt = 0;
 
 #ifdef DISPLAY_DEMO_BUTTON
 static bool demoMode = false;
-static unsigned long demoNextAt = 0;
 static int demoStep = 0;
-#define DEMO_STEP_MS 4000UL
+#define DEMO_POPUP_MS 3600000UL  // Demo popups stay until tapped
 #define DEMO_BTN_X 44
 #define DEMO_BTN_W 60
 static void DemoLoadValues();
@@ -603,12 +603,13 @@ static void DrawHeader()
     gfx->fillSmoothRoundRect(0, 0, SCREEN_W, HEADER_H, 8, COL_PANEL, COL_BG);
     gfx->drawFastHLine(0, HEADER_H, SCREEN_W, COL_ACCENT);
 
-    // Page tabs
+    // Page tabs (tappable: see HandleTouch)
     int x = 6;
     for (int i = 0; i < N_PAGES; i++)
     {
         bool active = i == currentPage;
         int w = gfx->textWidth(pageTabs[i], 2);
+        tabX0[i] = x - 5; tabX1[i] = x + w + 5;
         Text(x, 7, pageTabs[i], 2, TL_DATUM, active ? COL_FG : COL_DIM);
         if (active) gfx->fillRect(x - 2, HEADER_H - 3, w + 4, 3, COL_ACCENT);
         x += w + 11;
@@ -1230,22 +1231,15 @@ static void DemoStep()
     {
         vals[K_audio_source] = "TUNER"; SwitchPage(PG_AUDIO);
         int pk = st - N_PAGES - 2;
-        if (pk == 0) { vals[K_notification_message_on_mfd] = "Fuel level low!"; ShowPopup(POPUP_NOTIFICATION, DEMO_STEP_MS); }
-        else if (pk == 1) { vals[K_door_open] = "YES"; ShowPopup(POPUP_DOOR, DEMO_STEP_MS); vals[K_door_open] = "NO"; }
-        else if (pk == 2) ShowPopup(POPUP_AUDIO, DEMO_STEP_MS);
-        else { popupTripTab = "TR1"; ShowPopup(POPUP_TRIP, DEMO_STEP_MS); }
+        if (pk == 0) { vals[K_notification_message_on_mfd] = "Fuel level low!"; ShowPopup(POPUP_NOTIFICATION, DEMO_POPUP_MS); }
+        else if (pk == 1) { vals[K_door_open] = "YES"; ShowPopup(POPUP_DOOR, DEMO_POPUP_MS); vals[K_door_open] = "NO"; }
+        else if (pk == 2) ShowPopup(POPUP_AUDIO, DEMO_POPUP_MS);
+        else { popupTripTab = "TR1"; ShowPopup(POPUP_TRIP, DEMO_POPUP_MS); }
     } // if
     demoStep++;
     fullRedraw = true; dirty = true;
 } // DemoStep
 
-static void LoopDemo()
-{
-    if (! demoMode) return;
-    if ((long)(millis() - demoNextAt) < 0) return;
-    demoNextAt = millis() + DEMO_STEP_MS;
-    DemoStep();
-} // LoopDemo
 #endif // DISPLAY_DEMO_BUTTON
 
 // -----
@@ -1262,13 +1256,29 @@ static void HandleTouch()
     if (touchY >= PANEL_BOTTOM - 4 && touchX < SCREEN_W / 3)
     {
         demoMode = ! demoMode;
-        if (demoMode) { DemoLoadValues(); demoStep = 0; demoNextAt = millis() + DEMO_STEP_MS; }
+        if (demoMode) { DemoLoadValues(); demoStep = 0; }
         popupKind = POPUP_NONE; popupUntil = 0;
         fullRedraw = true; dirty = true;
         return;
     } // if
   #endif // DISPLAY_DEMO_BUTTON
 
+    // A tap on a header tab name jumps to that page
+    if (touchY < HEADER_H + 6)
+    {
+        for (int i = 0; i < N_PAGES; i++)
+        {
+            if (touchX >= tabX0[i] && touchX < tabX1[i])
+            {
+                popupKind = POPUP_NONE; popupUntil = 0;
+                SwitchPage(i);
+                fullRedraw = true; dirty = true;
+                return;
+            } // if
+        } // for
+    } // if
+
+    // A tap on a popup closes it
     if (PopupActive())
     {
         popupUntil = 0;
@@ -1277,6 +1287,11 @@ static void HandleTouch()
         dirty = true;
         return;
     } // if
+
+  #ifdef DISPLAY_DEMO_BUTTON
+    // TEMPORARY: in demo mode a tap goes to the next step of the demo sequence (pages, media variants, popups)
+    if (demoMode) { DemoStep(); return; }
+  #endif // DISPLAY_DEMO_BUTTON
 
     SwitchPage((currentPage + 1) % N_PAGES);
 } // HandleTouch
@@ -1508,10 +1523,6 @@ void LoopDisplay()
   #endif // DISPLAY_DEBUG_SERIAL
 
     HandleTouch();
-
-  #ifdef DISPLAY_DEMO_BUTTON
-    LoopDemo();
-  #endif // DISPLAY_DEMO_BUTTON
 
     // Popup expired?
     if (popupKind != POPUP_NONE && ! PopupActive())
