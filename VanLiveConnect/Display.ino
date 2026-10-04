@@ -38,6 +38,10 @@
 
 #ifdef USE_TFT_DISPLAY
 
+// TEMPORARY (requested 2026-10-04, to be removed on request): "DEMO" button in the footer that loads sample
+// values and cycles through all pages. Everything belonging to it is inside DISPLAY_DEMO_BUTTON blocks.
+#define DISPLAY_DEMO_BUTTON
+
 #include <TFT_eSPI.h>
 #include <ArduinoJson.h>
 
@@ -182,18 +186,38 @@ static void TouchSetup()
     digitalWrite(TFT_TOUCH_CS, HIGH);
 } // TouchSetup
 
-// Returns true if the panel is being pressed
+static uint16_t touchRawX = 0, touchRawY = 0;  // Last raw 12-bit readings
+static int touchX = -1, touchY = -1;           // Last mapped screen position
+
+// Raw-to-screen mapping for the landscape orientation (TFT_ROTATION 1). Calibration values are typical for
+// 2.8" XPT2046 modules; adjust TOUCH_RAW_MIN / MAX if touches land off-target.
+#define TOUCH_RAW_MIN 250
+#define TOUCH_RAW_MAX 3850
+
+static void TouchMap()
+{
+    long rx = 4095 - touchRawX, ry = 4095 - touchRawY;  // Touch layer is mounted rotated 180 degrees from the display
+  #if TFT_TOUCH_ROTATION == 1
+    rx = touchRawX; ry = touchRawY;
+  #endif
+    touchX = constrain(map(ry, TOUCH_RAW_MIN, TOUCH_RAW_MAX, 0, SCREEN_W - 1), 0, SCREEN_W - 1);
+    touchY = constrain(map(rx, TOUCH_RAW_MIN, TOUCH_RAW_MAX, 0, SCREEN_H - 1), 0, SCREEN_H - 1);
+} // TouchMap
+
+// Returns true if the panel is being pressed; updates touchX / touchY
 static bool TouchPressed()
 {
     digitalWrite(TFT_TOUCH_CS, LOW);
     uint16_t z1 = TouchTransfer(0xB1);  // Z1, keep powered (PD = 01)
     uint16_t z2 = TouchTransfer(0xC1);  // Z2
-    TouchTransfer(0x91);                // X (discarded)
-    TouchTransfer(0xD0);                // Y (discarded), power down with PENIRQ enabled (PD = 00)
+    uint16_t x = TouchTransfer(0x91);   // X
+    uint16_t y = TouchTransfer(0xD0);   // Y, power down with PENIRQ enabled (PD = 00)
     digitalWrite(TFT_TOUCH_CS, HIGH);
 
     int z = (int)z1 + 4095 - (int)z2;
-    return z >= TOUCH_Z_THRESHOLD && z1 > 0;
+    bool pressed = z >= TOUCH_Z_THRESHOLD && z1 > 0;
+    if (pressed) { touchRawX = x; touchRawY = y; TouchMap(); }
+    return pressed;
 } // TouchPressed
 
 // -----
@@ -280,6 +304,16 @@ static unsigned long popupUntil = 0;
 static String popupTripTab;  // "TR1", "TR2" or "FUE"
 static unsigned long lastTouchAt = 0;
 static unsigned long lastRedrawAt = 0;
+
+#ifdef DISPLAY_DEMO_BUTTON
+static bool demoMode = false;
+static unsigned long demoNextAt = 0;
+static int demoStep = 0;
+#define DEMO_STEP_MS 4000UL
+#define DEMO_BTN_X 44
+#define DEMO_BTN_W 60
+static void DemoLoadValues();
+#endif // DISPLAY_DEMO_BUTTON
 
 static void SwitchPage(int page)
 {
@@ -593,6 +627,12 @@ static void DrawFooter()
     String ws = "WS " + String(nWebSocketConnections);
     Text(SCREEN_W - 8, PANEL_BOTTOM + 12, ws.c_str(), 2, MR_DATUM, COL_DIM, COL_BG);
     Text(8, PANEL_BOTTOM + 12, OrDash(V(K_contact_key_position), ""), 2, ML_DATUM, COL_DIM, COL_BG);
+
+  #ifdef DISPLAY_DEMO_BUTTON
+    // TEMPORARY demo button
+    gfx->fillSmoothRoundRect(DEMO_BTN_X, PANEL_BOTTOM + 3, DEMO_BTN_W, 18, 5, demoMode ? COL_WARN : COL_LED_OFF, COL_BG);
+    Text(DEMO_BTN_X + DEMO_BTN_W / 2, PANEL_BOTTOM + 12, "DEMO", 2, MC_DATUM, demoMode ? COL_FG : COL_DIM, demoMode ? COL_WARN : COL_LED_OFF);
+  #endif // DISPLAY_DEMO_BUTTON
 } // DrawFooter
 
 // -----
@@ -1129,6 +1169,85 @@ static void Redraw()
     dirty = false;
 } // Redraw
 
+#ifdef DISPLAY_DEMO_BUTTON
+// TEMPORARY demo mode: sample values and automatic page cycling
+
+static const char demoValuesJson[] PROGMEM =
+    "{\"event\":\"display\",\"data\":{"
+    "\"vehicle_speed\":\"87\",\"engine_rpm\":\"2450\",\"coolant_temp\":\"89\",\"exterior_temp\":\"28.0\","
+    "\"fuel_level\":\"62\",\"fuel_level_unit\":\"lt\",\"odometer_1\":\"163,429\",\"contact_key_position\":\"ON\","
+    "\"engine_running\":\"YES\",\"dash_light\":\"ON\",\"hazard_lights\":\"OFF\",\"diesel_glow_plugs\":\"OFF\","
+    "\"door_open\":\"NO\",\"doors_locked\":\"YES\",\"door_front_left\":\"OPEN\",\"lights\":\"DIPPED_BEAM INDICATOR_LEFT \","
+    "\"chosen_gear\":\"4\",\"delivered_power\":\"74\",\"delivered_torque\":\"162\",\"in_reverse\":\"NO\","
+    "\"oil_level_raw\":\"7\",\"distance_to_service\":\"12400\",\"dashboard_programmed_brightness\":\"12\","
+    "\"vin\":\"VF38BRHZE81234567\",\"inst_consumption\":\"6.8\",\"distance_to_empty\":\"380\","
+    "\"avg_consumption_1\":\"7.4\",\"avg_speed_1\":\"58\",\"distance_1\":\"412\","
+    "\"avg_consumption_2\":\"8.1\",\"avg_speed_2\":\"64\",\"distance_2\":\"2370\",\"fuel_consumption_unit\":\"l/100 km\","
+    "\"speed_unit\":\"km/h\",\"distance_unit\":\"km\","
+    "\"audio_source\":\"TUNER\",\"head_unit_power\":\"ON\",\"tuner_band\":\"FM1\",\"tuner_memory\":\"3\","
+    "\"frequency\":\"96.8\",\"frequency_h\":\"0\",\"frequency_unit\":\"MHz\",\"rds_text\":\"YES FM\",\"pty_16\":\"Pop Music\","
+    "\"pi_country\":\"NL\",\"signal_strength\":\"12\",\"ta_selected\":\"ON\",\"ta_not_available\":\"OFF\",\"rds_selected\":\"ON\","
+    "\"rds_not_available\":\"OFF\",\"regional\":\"ON\",\"info_traffic\":\"OFF\",\"ext_mute\":\"OFF\",\"mute\":\"OFF\","
+    "\"loudness\":\"ON\",\"search_mode\":\"NONE\",\"volume\":\"18\",\"bass\":\"+3\",\"treble\":\"-2\",\"fader\":\"+1\","
+    "\"balance\":\"0\",\"auto_volume\":\"OFF\","
+    "\"cd_status\":\"PLAY\",\"cd_current_track\":\"7\",\"cd_total_tracks\":\"12\",\"cd_track_time\":\"03:42\",\"cd_total_time\":\"58:10\","
+    "\"cd_changer_status\":\"PLAY\",\"cd_changer_current_disc\":\"3\",\"cd_changer_current_track\":\"5\","
+    "\"cd_changer_total_tracks\":\"14\",\"cd_changer_track_time\":\"02:17\",\"cd_changer_disc_1_present\":\"ON\","
+    "\"cd_changer_disc_2_present\":\"ON\",\"cd_changer_disc_3_present\":\"ON\",\"cd_changer_disc_4_present\":\"OFF\","
+    "\"cd_changer_disc_5_present\":\"ON\",\"cd_changer_disc_6_present\":\"OFF\","
+    "\"satnav_curr_street\":\"Rue de la Paix (Paris)\",\"satnav_gps_fix\":\"ON\",\"satnav_gps_speed\":\"86 km/h\","
+    "\"satnav_curr_heading\":\"215\",\"satnav_heading_to_dest\":\"40\",\"satnav_distance_to_dest_via_road\":\"12.4 km\","
+    "\"satnav_turn_at\":\"350 m\",\"satnav_minutes_to_travel\":\"17\",\"satnav_guidance_status\":\"IN_GUIDANCE_MODE \","
+    "\"ac_enabled\":\"YES\",\"ac_compressor\":\"ON\",\"recirc\":\"OFF\",\"rear_heater_1\":\"OFF\",\"reported_fan_speed\":\"4\","
+    "\"set_fan_speed\":\"4\",\"condenser_pressure_bar\":\"11.2\",\"evaporator_temp\":\"4.5\","
+    "\"esp_free_ram\":\"214560 bytes\",\"esp_wifi_rssi\":\"-52 dB\""
+    "}}";
+
+static void DemoLoadValues()
+{
+    char* buf = (char*)malloc(sizeof(demoValuesJson));
+    if (! buf) return;
+    strcpy_P(buf, demoValuesJson);
+    DisplayOnJson(buf);
+    free(buf);
+    popupKind = POPUP_NONE;
+} // DemoLoadValues
+
+// Sequence: the eight pages, then CD and CD changer, then the four popups
+static void DemoStep()
+{
+    const int nSteps = N_PAGES + 2 + 4;
+    int st = demoStep % nSteps;
+    popupKind = POPUP_NONE; popupUntil = 0;
+    if (st < N_PAGES)
+    {
+        if (st == PG_AUDIO) vals[K_audio_source] = "TUNER";
+        SwitchPage(st);
+    }
+    else if (st == N_PAGES) { vals[K_audio_source] = "CD"; SwitchPage(PG_AUDIO); }
+    else if (st == N_PAGES + 1) { vals[K_audio_source] = "CD_CHANGER"; SwitchPage(PG_AUDIO); }
+    else
+    {
+        vals[K_audio_source] = "TUNER"; SwitchPage(PG_AUDIO);
+        int pk = st - N_PAGES - 2;
+        if (pk == 0) { vals[K_notification_message_on_mfd] = "Fuel level low!"; ShowPopup(POPUP_NOTIFICATION, DEMO_STEP_MS); }
+        else if (pk == 1) { vals[K_door_open] = "YES"; ShowPopup(POPUP_DOOR, DEMO_STEP_MS); vals[K_door_open] = "NO"; }
+        else if (pk == 2) ShowPopup(POPUP_AUDIO, DEMO_STEP_MS);
+        else { popupTripTab = "TR1"; ShowPopup(POPUP_TRIP, DEMO_STEP_MS); }
+    } // if
+    demoStep++;
+    fullRedraw = true; dirty = true;
+} // DemoStep
+
+static void LoopDemo()
+{
+    if (! demoMode) return;
+    if ((long)(millis() - demoNextAt) < 0) return;
+    demoNextAt = millis() + DEMO_STEP_MS;
+    DemoStep();
+} // LoopDemo
+#endif // DISPLAY_DEMO_BUTTON
+
 // -----
 // Touch
 
@@ -1137,6 +1256,18 @@ static void HandleTouch()
     if (! TouchPressed()) return;
     if (millis() - lastTouchAt < TOUCH_DEBOUNCE_MS) return;
     lastTouchAt = millis();
+
+  #ifdef DISPLAY_DEMO_BUTTON
+    // TEMPORARY: footer "DEMO" button (generous hit zone: bottom strip, left third)
+    if (touchY >= PANEL_BOTTOM - 4 && touchX < SCREEN_W / 3)
+    {
+        demoMode = ! demoMode;
+        if (demoMode) { DemoLoadValues(); demoStep = 0; demoNextAt = millis() + DEMO_STEP_MS; }
+        popupKind = POPUP_NONE; popupUntil = 0;
+        fullRedraw = true; dirty = true;
+        return;
+    } // if
+  #endif // DISPLAY_DEMO_BUTTON
 
     if (PopupActive())
     {
@@ -1306,6 +1437,12 @@ void DisplayRegisterDebugHttp(AsyncWebServer& server)
         } // if
         request->send(200, "text/plain", "usage: /tft?cmd=<tft command>, then /tft.raw");
     });
+    server.on("/tft.touch", HTTP_GET, [](AsyncWebServerRequest* request)
+    {
+        char b[96];
+        snprintf(b, sizeof(b), "raw x=%u y=%u -> screen x=%d y=%d page=%d", touchRawX, touchRawY, touchX, touchY, currentPage);
+        request->send(200, "text/plain", b);
+    });
     server.on("/tft.raw", HTTP_GET, [](AsyncWebServerRequest* request)
     {
         if (snapshot == 0 || ! snapshotReady) { request->send(503, "text/plain", "no snapshot"); return; }
@@ -1371,6 +1508,10 @@ void LoopDisplay()
   #endif // DISPLAY_DEBUG_SERIAL
 
     HandleTouch();
+
+  #ifdef DISPLAY_DEMO_BUTTON
+    LoopDemo();
+  #endif // DISPLAY_DEMO_BUTTON
 
     // Popup expired?
     if (popupKind != POPUP_NONE && ! PopupActive())
