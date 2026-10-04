@@ -196,9 +196,10 @@ static int touchX = -1, touchY = -1;           // Last mapped screen position
 
 static void TouchMap()
 {
-    long rx = 4095 - touchRawX, ry = 4095 - touchRawY;  // Touch layer is mounted rotated 180 degrees from the display
+    // Verified on the bench (2.8" module, TFT_ROTATION 1): raw axes map straight onto the screen axes
+    long rx = touchRawX, ry = touchRawY;
   #if TFT_TOUCH_ROTATION == 1
-    rx = touchRawX; ry = touchRawY;
+    rx = 4095 - touchRawX; ry = 4095 - touchRawY;  // Touch layer mounted the other way round
   #endif
     touchX = constrain(map(ry, TOUCH_RAW_MIN, TOUCH_RAW_MAX, 0, SCREEN_W - 1), 0, SCREEN_W - 1);
     touchY = constrain(map(rx, TOUCH_RAW_MIN, TOUCH_RAW_MAX, 0, SCREEN_H - 1), 0, SCREEN_H - 1);
