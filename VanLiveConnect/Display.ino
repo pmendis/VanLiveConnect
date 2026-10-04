@@ -188,21 +188,20 @@ static void TouchSetup()
 
 static uint16_t touchRawX = 0, touchRawY = 0;  // Last raw 12-bit readings
 static int touchX = -1, touchY = -1;           // Last mapped screen position
+static uint16_t touchHist[6][4] = { { 0 } };   // Last touches (raw x, raw y, screen x, screen y), newest first
 
-// Raw-to-screen mapping for the landscape orientation (TFT_ROTATION 1). Calibration values are typical for
-// 2.8" XPT2046 modules; adjust TOUCH_RAW_MIN / MAX if touches land off-target.
-#define TOUCH_RAW_MIN 250
-#define TOUCH_RAW_MAX 3850
+// Raw-to-screen mapping for the landscape orientation (TFT_ROTATION 1), calibrated on the bench from taps on
+// known positions (2026-10-04): screen X follows raw X and screen Y follows raw Y, both inverted.
+//   raw X 3983 -> x 0, raw X 442 -> x 320;  raw Y 3874 -> y 0, raw Y 295 -> y 240
+#define TOUCH_X_RAW_AT_0 3983
+#define TOUCH_X_RAW_AT_MAX 442
+#define TOUCH_Y_RAW_AT_0 3874
+#define TOUCH_Y_RAW_AT_MAX 295
 
 static void TouchMap()
 {
-    // Verified on the bench (2.8" module, TFT_ROTATION 1): raw axes map straight onto the screen axes
-    long rx = touchRawX, ry = touchRawY;
-  #if TFT_TOUCH_ROTATION == 1
-    rx = 4095 - touchRawX; ry = 4095 - touchRawY;  // Touch layer mounted the other way round
-  #endif
-    touchX = constrain(map(ry, TOUCH_RAW_MIN, TOUCH_RAW_MAX, 0, SCREEN_W - 1), 0, SCREEN_W - 1);
-    touchY = constrain(map(rx, TOUCH_RAW_MIN, TOUCH_RAW_MAX, 0, SCREEN_H - 1), 0, SCREEN_H - 1);
+    touchX = constrain(map((long)touchRawX, TOUCH_X_RAW_AT_0, TOUCH_X_RAW_AT_MAX, 0, SCREEN_W), 0, SCREEN_W - 1);
+    touchY = constrain(map((long)touchRawY, TOUCH_Y_RAW_AT_0, TOUCH_Y_RAW_AT_MAX, 0, SCREEN_H), 0, SCREEN_H - 1);
 } // TouchMap
 
 // Returns true if the panel is being pressed; updates touchX / touchY
@@ -1254,12 +1253,14 @@ static void HandleTouch()
     bool edge = pressed && ! wasPressed;
     wasPressed = pressed;
     if (! edge) return;
+    for (int i = 5; i > 0; i--) memcpy(touchHist[i], touchHist[i - 1], sizeof(touchHist[0]));
+    touchHist[0][0] = touchRawX; touchHist[0][1] = touchRawY; touchHist[0][2] = touchX; touchHist[0][3] = touchY;
     if (millis() - lastTouchAt < TOUCH_DEBOUNCE_MS) return;
     lastTouchAt = millis();
 
   #ifdef DISPLAY_DEMO_BUTTON
-    // TEMPORARY: footer "DEMO" button (generous hit zone: bottom strip, left third)
-    if (touchY >= PANEL_BOTTOM - 4 && touchX < SCREEN_W / 3)
+    // TEMPORARY: footer "DEMO" button (hit zone: the button plus a 6 px margin)
+    if (touchY >= PANEL_BOTTOM - 2 && touchX >= DEMO_BTN_X - 6 && touchX < DEMO_BTN_X + DEMO_BTN_W + 6)
     {
         demoMode = ! demoMode;
         if (demoMode) { DemoLoadValues(); demoStep = 0; }
@@ -1460,8 +1461,9 @@ void DisplayRegisterDebugHttp(AsyncWebServer& server)
     });
     server.on("/tft.touch", HTTP_GET, [](AsyncWebServerRequest* request)
     {
-        char b[96];
-        snprintf(b, sizeof(b), "raw x=%u y=%u -> screen x=%d y=%d page=%d", touchRawX, touchRawY, touchX, touchY, currentPage);
+        String b = "page=" + String(currentPage) + "\n";
+        for (int i = 0; i < 6; i++)
+            b += "raw x=" + String(touchHist[i][0]) + " y=" + String(touchHist[i][1]) + " -> screen x=" + String(touchHist[i][2]) + " y=" + String(touchHist[i][3]) + "\n";
         request->send(200, "text/plain", b);
     });
     server.on("/tft.raw", HTTP_GET, [](AsyncWebServerRequest* request)
