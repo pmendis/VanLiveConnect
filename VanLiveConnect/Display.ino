@@ -1247,7 +1247,12 @@ static void DemoStep()
 
 static void HandleTouch()
 {
-    if (! TouchPressed()) return;
+    // Act once per touch: on the press edge only, with a short debounce
+    static bool wasPressed = false;
+    bool pressed = TouchPressed();
+    bool edge = pressed && ! wasPressed;
+    wasPressed = pressed;
+    if (! edge) return;
     if (millis() - lastTouchAt < TOUCH_DEBOUNCE_MS) return;
     lastTouchAt = millis();
 
