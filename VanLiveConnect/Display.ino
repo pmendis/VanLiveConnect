@@ -1,12 +1,28 @@
 /*
  * Display.ino - Optional on-board 2.8" 240x320 ILI9341 SPI TFT with XPT2046 resistive touch.
  *
- * Shows a compact subset of the vehicle data directly on the ESP board, in addition to (not instead of)
- * the browser-based MFD. Intended for the ESP32-S3 (16 MB flash, 8 MB PSRAM) but will compile for any
- * ESP32 variant if the pins are set appropriately.
+ * Shows the vehicle data directly on the ESP board, in addition to (not instead of) the browser-based MFD.
+ * Intended for the ESP32-S3 (16 MB flash, 8 MB PSRAM) but will compile for any ESP32 variant if the pins
+ * are set appropriately.
  *
- * The module taps into the same JSON that is sent to the browser: every call to SendJsonOnWebSocket()
- * also passes the JSON to DisplayOnJson(), which picks out the handful of keys shown on the TFT.
+ * Version 3: covers (nearly) all information the browser MFD shows, spread over eight pages:
+ *
+ *   CLK  Clock, date, exterior temperature, key position
+ *   ENG  Instruments: fuel and coolant arc gauges, speed, rpm, odometer, gear, power / torque, lights
+ *   CHK  "Pre-flight" checks: oil level, service distance, key position, dashboard brightness, status, VIN
+ *   MED  Head unit: tuner (band, preset, frequency, RDS, PTY, PI, signal, flags), tape, CD, CD changer
+ *   TRP  Trip computers 1 and 2, instant consumption, range
+ *   NAV  Sat nav: current street, GPS, heading, guidance (turn at, distance, time, heading to destination)
+ *   AC   Climate: A/C, compressor, recirculation, rear heater, fan speed, condenser pressure, evaporator
+ *   SYS  ESP / Wi-Fi / VAN bus status
+ *
+ * The page follows the original MFD: the firmware reports which large screen the car's own display shows
+ * ("large_screen" = CLOCK / HEAD_UNIT / TRIP_COMPUTER / CURRENT_STREET / GUIDANCE), and the TFT switches
+ * accordingly. A tap cycles through all pages manually. Popups (notifications, door open, audio settings,
+ * trip computer) overlay the current page like on the original MFD.
+ *
+ * The module taps into the same JSON that is sent to the browser: every call to SendJsonOnWebSocket() also
+ * passes the JSON to DisplayOnJson(), which stores the values of the keys listed in DISPLAY_KEYS below.
  *
  * Enable by compiling with -DUSE_TFT_DISPLAY plus the TFT_eSPI pin/driver defines; see
  * 'extras/Scripts/flash_s3_display.ps1' and the "TFT display" section in 'Config.h'.
@@ -31,19 +47,69 @@ extern int nWebSocketConnections;
 // Defined in Sleep.ino
 extern unsigned long lastActivityAt;
 
+// -----
+// Wall clock for the TFT. The browser sends its UTC time and time zone over the WebSocket (see
+// WebSocket.ino); the firmware itself only uses that when PREPEND_TIME_STAMP_TO_DEBUG_OUTPUT is set, so the
+// display keeps its own copy and needs no TimeLib.
+
+static uint32_t clockEpochUtc = 0;        // UTC seconds at the moment of 'clockSetAtMillis'
+static unsigned long clockSetAtMillis = 0;
+static int clockTzOffsetMinutes = 0;
+
+void DisplaySetTimeZone(int offsetMinutes)
+{
+    if (offsetMinutes >= -12 * 60 && offsetMinutes <= 14 * 60) clockTzOffsetMinutes = offsetMinutes;
+} // DisplaySetTimeZone
+
+void DisplaySetTime(uint32_t epochUtc)
+{
+    if (epochUtc < 1451606400UL) return;  // Before 2016: not a sane time
+    clockEpochUtc = epochUtc;
+    clockSetAtMillis = millis();
+} // DisplaySetTime
+
+static bool ClockIsSet()
+{
+    return clockEpochUtc != 0;
+} // ClockIsSet
+
+// Local time as seconds since the epoch
+static uint32_t ClockNowLocal()
+{
+    return clockEpochUtc + (millis() - clockSetAtMillis) / 1000UL + (int32_t)clockTzOffsetMinutes * 60;
+} // ClockNowLocal
+
+// Civil date from days since 1970-01-01 (Howard Hinnant's algorithm)
+static void CivilFromDays(int32_t z, int& y, int& m, int& d)
+{
+    z += 719468;
+    int32_t era = (z >= 0 ? z : z - 146096) / 146097;
+    uint32_t doe = (uint32_t)(z - era * 146097);
+    uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int32_t yy = (int32_t)yoe + era * 400;
+    uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    uint32_t mp = (5 * doy + 2) / 153;
+    d = (int)(doy - (153 * mp + 2) / 5 + 1);
+    m = (int)(mp < 10 ? mp + 3 : mp - 9);
+    y = (int)(yy + (m <= 2 ? 1 : 0));
+} // CivilFromDays
+
 // Landscape orientation
 #define SCREEN_W 320
 #define SCREEN_H 240
 
 #define HEADER_H 30
-#define FOOTER_Y (SCREEN_H - 24)
+#define PANEL_Y 34
+#define PANEL_H 182
+#define PANEL_BOTTOM (PANEL_Y + PANEL_H)
 
 #define POPUP_MS 6000UL
+#define AUDIO_POPUP_MS 4000UL
 #define TOUCH_DEBOUNCE_MS 400UL
 #define REDRAW_INTERVAL_MS 100UL
 
-// Colours
-#define COL_BG 0x0062        // Deep navy (rgb 6,10,20), like the web page background
+// Colours (RGB565)
+#define COL_BG 0x0042        // Deep navy (rgb 6,10,20), like the web page background
 #define COL_PANEL 0x08A4     // Panel fill (rgb 11,20,38)
 #define COL_FG TFT_WHITE
 #define COL_DIM 0x5B2F       // Muted blue-grey (rgb 90,100,125)
@@ -116,101 +182,128 @@ static void TouchSetup()
     digitalWrite(TFT_TOUCH_CS, HIGH);
 } // TouchSetup
 
-// Returns true if the panel is being pressed; optionally returns raw 12-bit x and y
-static bool TouchPressed(uint16_t* rawX = 0, uint16_t* rawY = 0)
+// Returns true if the panel is being pressed
+static bool TouchPressed()
 {
     digitalWrite(TFT_TOUCH_CS, LOW);
     uint16_t z1 = TouchTransfer(0xB1);  // Z1, keep powered (PD = 01)
     uint16_t z2 = TouchTransfer(0xC1);  // Z2
-    uint16_t x = TouchTransfer(0x91);   // X
-    uint16_t y = TouchTransfer(0xD0);   // Y, power down with PENIRQ enabled (PD = 00)
+    TouchTransfer(0x91);                // X (discarded)
+    TouchTransfer(0xD0);                // Y (discarded), power down with PENIRQ enabled (PD = 00)
     digitalWrite(TFT_TOUCH_CS, HIGH);
 
     int z = (int)z1 + 4095 - (int)z2;
-    if (rawX) *rawX = x;
-    if (rawY) *rawY = y;
     return z >= TOUCH_Z_THRESHOLD && z1 > 0;
 } // TouchPressed
 
-enum TDisplayScreen
-{
-    SCR_INSTRUMENTS,
-    SCR_AUDIO,
-    SCR_TRIP,
-    N_SCREENS
-}; // enum TDisplayScreen
+// -----
+// Data: all JSON keys shown on the TFT, stored as the strings sent to the browser
 
-static int currentScreen = SCR_INSTRUMENTS;
+#define DISPLAY_KEYS(X) \
+    /* Vehicle */ \
+    X(vehicle_speed) X(engine_rpm) X(coolant_temp) X(exterior_temp) X(fuel_level) X(fuel_level_unit) \
+    X(odometer_1) X(contact_key_position) X(engine_running) X(dash_light) X(hazard_lights) X(diesel_glow_plugs) \
+    X(door_open) X(doors_locked) X(door_front_left) X(door_front_right) X(door_rear_left) X(door_rear_right) \
+    X(door_boot) X(lights) X(chosen_gear) X(delivered_power) X(delivered_torque) X(in_reverse) \
+    X(oil_level_raw) X(distance_to_service) X(dashboard_programmed_brightness) X(vin) \
+    /* Trip computer */ \
+    X(inst_consumption) X(distance_to_empty) X(avg_consumption_1) X(avg_speed_1) X(distance_1) \
+    X(avg_consumption_2) X(avg_speed_2) X(distance_2) X(fuel_consumption_unit) X(speed_unit) X(distance_unit) \
+    /* Head unit */ \
+    X(audio_source) X(head_unit_power) X(tuner_band) X(tuner_memory) X(frequency) X(frequency_h) \
+    X(frequency_unit) X(rds_text) X(pty_16) X(pi_country) X(signal_strength) X(ta_selected) X(ta_not_available) \
+    X(rds_selected) X(rds_not_available) X(regional) X(info_traffic) X(ext_mute) X(mute) X(loudness) \
+    X(search_mode) X(search_manual) X(search_sensitivity) X(volume) X(bass) X(treble) X(fader) X(balance) \
+    X(auto_volume) X(audio_menu) \
+    X(tape_side) X(tape_status) X(cd_status) X(cd_current_track) X(cd_total_tracks) X(cd_track_time) \
+    X(cd_total_time) X(cd_random) X(cd_changer_status) X(cd_changer_current_disc) X(cd_changer_current_track) \
+    X(cd_changer_total_tracks) X(cd_changer_track_time) X(cd_changer_random) X(cd_changer_disc_1_present) \
+    X(cd_changer_disc_2_present) X(cd_changer_disc_3_present) X(cd_changer_disc_4_present) \
+    X(cd_changer_disc_5_present) X(cd_changer_disc_6_present) \
+    /* Sat nav */ \
+    X(satnav_curr_street) X(satnav_gps_fix) X(satnav_gps_speed) X(satnav_curr_heading) X(satnav_heading_to_dest) \
+    X(satnav_distance_to_dest_via_road) X(satnav_turn_at) X(satnav_minutes_to_travel) X(satnav_guidance_status) \
+    X(satnav_arrived_at_destination) X(satnav_destination_not_accessible) \
+    /* Climate */ \
+    X(ac_enabled) X(ac_compressor) X(recirc) X(rear_heater_1) X(reported_fan_speed) X(set_fan_speed) \
+    X(condenser_pressure_bar) X(evaporator_temp) \
+    /* MFD state and popups */ \
+    X(notification_message_on_mfd) X(notification_icon_on_mfd) X(mfd_popup) X(large_screen) X(small_screen) \
+    X(trip_computer_screen_tab) X(mfd_temperature_unit) X(mfd_distance_unit) \
+    /* ESP */ \
+    X(esp_free_ram) X(esp_wifi_rssi) X(uptime_seconds) X(esp_ip_address)
+
+#define AS_ENUM(k) K_##k,
+#define AS_NAME(k) #k,
+
+enum TDisplayKey { DISPLAY_KEYS(AS_ENUM) N_KEYS };
+static const char* const keyNames[N_KEYS] = { DISPLAY_KEYS(AS_NAME) };
+static String vals[N_KEYS];
+
+static inline const String& V(TDisplayKey k) { return vals[k]; }
+static inline bool Is(TDisplayKey k, const char* s) { return vals[k] == s; }
+static inline bool On(TDisplayKey k) { return vals[k] == "ON" || vals[k] == "YES" || vals[k] == "OPEN"; }
+
+// -----
+// Pages and state
+
+enum TDisplayPage
+{
+    PG_CLOCK,
+    PG_INSTRUMENTS,
+    PG_PREFLIGHT,
+    PG_AUDIO,
+    PG_TRIP,
+    PG_NAV,
+    PG_CLIMATE,
+    PG_SYSTEM,
+    N_PAGES
+}; // enum TDisplayPage
+
+static const char* const pageTabs[N_PAGES] = { "CLK", "ENG", "CHK", "MED", "TRP", "NAV", "AC", "SYS" };
+
+enum TPopupKind
+{
+    POPUP_NONE,
+    POPUP_NOTIFICATION,
+    POPUP_DOOR,
+    POPUP_AUDIO,
+    POPUP_TRIP
+}; // enum TPopupKind
+
+static int currentPage = PG_CLOCK;
+static int tripTab = 1;  // 1 or 2
 static bool fullRedraw = true;
 static bool dirty = true;
+static TPopupKind popupKind = POPUP_NONE;
 static unsigned long popupUntil = 0;
+static String popupTripTab;  // "TR1", "TR2" or "FUE"
 static unsigned long lastTouchAt = 0;
 static unsigned long lastRedrawAt = 0;
 
-// Last known values, as strings exactly as sent to the browser
-struct TDisplayState
+static void SwitchPage(int page)
 {
-    String vehicleSpeed;
-    String engineRpm;
-    String coolantTemp;
-    String exteriorTemp;
-    String fuelLevel;
-    String odometer;
-    String contactKeyPosition;
-    String engineRunning;
-    String audioSource;
-    String headUnitPower;
-    String tunerBand;
-    String tunerMemory;
-    String frequency;
-    String frequencyUnit;
-    String rdsText;
-    String volume;
-    String instConsumption;
-    String distanceToEmpty;
-    String doorOpen;
-    String doorsLocked;
-    String lights;
-    String currentStreet;
-    String cdTrack;
-    String cdTrackTime;
-    String popupMessage;
-    String tempUnit;
-    String distanceUnit;
-}; // struct TDisplayState
+    if (page == currentPage) return;
+    currentPage = page;
+    fullRedraw = true;
+    dirty = true;
+} // SwitchPage
 
-static TDisplayState st;
+static void ShowPopup(TPopupKind kind, unsigned long ms)
+{
+    popupKind = kind;
+    popupUntil = millis() + ms;
+    fullRedraw = true;
+    dirty = true;
+} // ShowPopup
+
+static bool PopupActive()
+{
+    return popupKind != POPUP_NONE && (long)(millis() - popupUntil) < 0;
+} // PopupActive
 
 // -----
 // JSON intake
-
-// Update 'field' from 'v' if 'v' is a string and differs. Returns true if changed.
-static bool Upd(String& field, JsonVariantConst v)
-{
-    if (! v.is<const char*>()) return false;
-    const char* s = v.as<const char*>();
-    if (s == 0) return false;
-    if (field == s) return false;
-    field = s;
-    return true;
-} // Upd
-
-static void SwitchScreen(int screen)
-{
-    if (screen == currentScreen) return;
-    currentScreen = screen;
-    fullRedraw = true;
-} // SwitchScreen
-
-static const char* const displayKeys[] PROGMEM =
-{
-    "vehicle_speed", "engine_rpm", "coolant_temp", "exterior_temp", "fuel_level", "odometer_1",
-    "contact_key_position", "engine_running", "audio_source", "head_unit_power", "tuner_band",
-    "tuner_memory", "frequency", "frequency_unit", "rds_text", "volume", "inst_consumption",
-    "distance_to_empty", "door_open", "doors_locked", "lights", "satnav_curr_street",
-    "cd_current_track", "cd_track_time", "notification_message_on_mfd", "mfd_temperature_unit",
-    "mfd_distance_unit"
-};
 
 static JsonDocument& DisplayFilter()
 {
@@ -220,10 +313,7 @@ static JsonDocument& DisplayFilter()
     {
         filter["event"] = true;
         JsonObject data = filter["data"].to<JsonObject>();
-        for (size_t i = 0; i < sizeof(displayKeys) / sizeof(displayKeys[0]); i++)
-        {
-            data[(const char*)pgm_read_ptr(&displayKeys[i])] = true;
-        } // for
+        for (int i = 0; i < N_KEYS; i++) data[keyNames[i]] = true;
         built = true;
     } // if
     return filter;
@@ -244,49 +334,74 @@ void DisplayOnJson(const char* json)
     JsonObjectConst d = doc["data"];
     if (d.isNull()) return;
 
-    dirty |= Upd(st.vehicleSpeed, d["vehicle_speed"]);
-    dirty |= Upd(st.engineRpm, d["engine_rpm"]);
-    dirty |= Upd(st.coolantTemp, d["coolant_temp"]);
-    dirty |= Upd(st.exteriorTemp, d["exterior_temp"]);
-    dirty |= Upd(st.fuelLevel, d["fuel_level"]);
-    dirty |= Upd(st.odometer, d["odometer_1"]);
-    dirty |= Upd(st.contactKeyPosition, d["contact_key_position"]);
-    dirty |= Upd(st.engineRunning, d["engine_running"]);
-    dirty |= Upd(st.headUnitPower, d["head_unit_power"]);
-    dirty |= Upd(st.tunerBand, d["tuner_band"]);
-    dirty |= Upd(st.tunerMemory, d["tuner_memory"]);
-    dirty |= Upd(st.frequency, d["frequency"]);
-    dirty |= Upd(st.frequencyUnit, d["frequency_unit"]);
-    dirty |= Upd(st.rdsText, d["rds_text"]);
-    dirty |= Upd(st.volume, d["volume"]);
-    dirty |= Upd(st.instConsumption, d["inst_consumption"]);
-    dirty |= Upd(st.distanceToEmpty, d["distance_to_empty"]);
-    dirty |= Upd(st.doorOpen, d["door_open"]);
-    dirty |= Upd(st.doorsLocked, d["doors_locked"]);
-    dirty |= Upd(st.lights, d["lights"]);
-    dirty |= Upd(st.currentStreet, d["satnav_curr_street"]);
-    dirty |= Upd(st.cdTrack, d["cd_current_track"]);
-    dirty |= Upd(st.cdTrackTime, d["cd_track_time"]);
-    dirty |= Upd(st.tempUnit, d["mfd_temperature_unit"]);
-    dirty |= Upd(st.distanceUnit, d["mfd_distance_unit"]);
-
-    // Follow the head unit, like the original MFD does
-    if (Upd(st.audioSource, d["audio_source"]))
+    bool changed[N_KEYS] = { false };
+    for (int i = 0; i < N_KEYS; i++)
     {
+        JsonVariantConst v = d[keyNames[i]];
+        if (! v.is<const char*>()) continue;
+        const char* s = v.as<const char*>();
+        if (s == 0 || vals[i] == s) continue;
+        vals[i] = s;
+        changed[i] = true;
         dirty = true;
-        if (st.audioSource == "NONE") SwitchScreen(SCR_INSTRUMENTS);
-        else if (st.audioSource != "NAVIGATION") SwitchScreen(SCR_AUDIO);
+    } // for
+
+    // Follow the original MFD's large screen
+    if (changed[K_large_screen])
+    {
+        const String& ls = V(K_large_screen);
+        if (ls == "CLOCK") SwitchPage(PG_CLOCK);
+        else if (ls == "HEAD_UNIT") SwitchPage(PG_AUDIO);
+        else if (ls == "TRIP_COMPUTER") SwitchPage(PG_TRIP);
+        else if (ls == "CURRENT_STREET" || ls == "GUIDANCE") SwitchPage(PG_NAV);
+    } // if
+
+    // Head unit switched on / source changed: show it (as the original MFD does)
+    if (changed[K_audio_source])
+    {
+        if (V(K_audio_source) == "NONE") { if (currentPage == PG_AUDIO) SwitchPage(PG_CLOCK); }
+        else if (V(K_audio_source) != "NAVIGATION") SwitchPage(PG_AUDIO);
+    } // if
+
+    // Trip computer tab, from the small screen or the trip computer screen
+    if (changed[K_small_screen] || changed[K_trip_computer_screen_tab])
+    {
+        const String& t = changed[K_trip_computer_screen_tab] ? V(K_trip_computer_screen_tab) : V(K_small_screen);
+        if (t == "TRIP_INFO_1") tripTab = 1;
+        else if (t == "TRIP_INFO_2") tripTab = 2;
     } // if
 
     // Notification popup
-    if (Upd(st.popupMessage, d["notification_message_on_mfd"]))
+    if (changed[K_notification_message_on_mfd] && V(K_notification_message_on_mfd).length() > 0)
     {
-        dirty = true;
-        if (st.popupMessage.length() > 0)
+        ShowPopup(POPUP_NOTIFICATION, POPUP_MS);
+    } // if
+
+    // Door open popup
+    if (changed[K_door_open] && On(K_door_open) && popupKind != POPUP_NOTIFICATION)
+    {
+        ShowPopup(POPUP_DOOR, POPUP_MS);
+    } // if
+    if (changed[K_door_open] && ! On(K_door_open) && popupKind == POPUP_DOOR) popupUntil = 0;
+
+    // Audio settings popup, like the browser: shown while the audio menu is open or a setting changes
+    bool audioChanged = changed[K_volume] || changed[K_bass] || changed[K_treble] || changed[K_fader]
+        || changed[K_balance] || changed[K_loudness] || changed[K_auto_volume];
+    if ((audioChanged || (changed[K_audio_menu] && On(K_audio_menu))) && On(K_head_unit_power) && popupKind != POPUP_NOTIFICATION)
+    {
+        ShowPopup(POPUP_AUDIO, AUDIO_POPUP_MS);
+    } // if
+
+    // Trip computer popup ("TR1", "TR2", "FUE"), shown by the original MFD while in guidance mode
+    if (changed[K_mfd_popup])
+    {
+        const String& p = V(K_mfd_popup);
+        if (p == "TR1" || p == "TR2" || p == "FUE")
         {
-            popupUntil = millis() + POPUP_MS;
-            fullRedraw = true;
-        } // if
+            popupTripTab = p;
+            ShowPopup(POPUP_TRIP, POPUP_MS);
+        }
+        else if (p.length() == 0 && popupKind == POPUP_TRIP) popupUntil = 0;
     } // if
 } // DisplayOnJson
 
@@ -300,25 +415,25 @@ static const char* OrDash(const String& s, const char* dash = "--")
 
 static const char* TempUnitStr()
 {
-    return st.tempUnit == "set_units_deg_fahrenheit" ? "F" : "C";
+    return V(K_mfd_temperature_unit) == "set_units_deg_fahrenheit" ? "F" : "C";
 } // TempUnitStr
 
 static const char* DistanceUnitStr()
 {
-    return st.distanceUnit == "set_units_mph" ? "mi" : "km";
+    return V(K_distance_unit).length() > 0 ? V(K_distance_unit).c_str() : (V(K_mfd_distance_unit) == "set_units_mph" ? "mi" : "km");
 } // DistanceUnitStr
 
 static const char* SpeedUnitStr()
 {
-    return st.distanceUnit == "set_units_mph" ? "mph" : "km/h";
+    return V(K_speed_unit).length() > 0 ? V(K_speed_unit).c_str() : (V(K_mfd_distance_unit) == "set_units_mph" ? "mph" : "km/h");
 } // SpeedUnitStr
 
-// -----
-// Screens (v2 "HMI" look: header tabs, framed panel, arc gauges, cyan accent)
-
-#define PANEL_Y 34
-#define PANEL_H 182
-#define PANEL_BOTTOM (PANEL_Y + PANEL_H)
+static void Text(int x, int y, const char* s, int font, uint8_t datum, uint16_t color, uint16_t bg = COL_PANEL)
+{
+    gfx->setTextDatum(datum);
+    gfx->setTextColor(color, bg);
+    gfx->drawString(s, x, y, font);
+} // Text
 
 // Rounded panel frame with a slightly lighter fill
 static void Panel(int x, int y, int w, int h)
@@ -326,6 +441,13 @@ static void Panel(int x, int y, int w, int h)
     gfx->fillSmoothRoundRect(x, y, w, h, 10, COL_PANEL, COL_BG);
     gfx->drawSmoothRoundRect(x, y, 10, 8, w, h, COL_ACCENT, COL_PANEL);
 } // Panel
+
+// Label (small, accent) with a value (font 4) below it
+static void LabelValue(int x, int y, const char* label, const char* value, uint16_t color = COL_FG, int font = 4)
+{
+    Text(x, y, label, 2, TL_DATUM, COL_ACCENT);
+    Text(x, y + 17, value, font, TL_DATUM, color);
+} // LabelValue
 
 // 180-degree arc gauge, open side down. 'zones' is a list of (endPercent, colour) pairs.
 struct TArcZone { int endPercent; uint16_t color; };
@@ -343,7 +465,6 @@ static void ArcGauge(int cx, int cy, int r, const TArcZone* zones, int nZones, i
     } // for
 
     // Level indicator: bright arc on top of the zones
-    if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
     if (percent > 0)
     {
@@ -358,20 +479,13 @@ static void ArcGauge(int cx, int cy, int r, const TArcZone* zones, int nZones, i
         gfx->drawArc(cx, cy, r + 3, r - 10, a - 1, a + 1, COL_DIM, COL_PANEL, false);
     } // for
 
-    // Label above, value below
-    gfx->setTextDatum(BC_DATUM);
-    gfx->setTextColor(COL_DIM, COL_PANEL);
-    gfx->drawString(label, cx, cy - r - 4, 2);
+    Text(cx, cy - r - 4, label, 2, BC_DATUM, COL_DIM);
 
-    gfx->setTextDatum(TC_DATUM);
-    gfx->setTextColor(COL_FG, COL_PANEL);
     int vw = gfx->textWidth(value, 4);
     int uw = gfx->textWidth(unit, 2);
     int x0 = cx - (vw + 4 + uw) / 2;
-    gfx->setTextDatum(TL_DATUM);
-    gfx->drawString(value, x0, cy + 4, 4);
-    gfx->setTextColor(COL_DIM, COL_PANEL);
-    gfx->drawString(unit, x0 + vw + 4, cy + 10, 2);
+    Text(x0, cy + 4, value, 4, TL_DATUM, COL_FG);
+    Text(x0 + vw + 4, cy + 10, unit, 2, TL_DATUM, COL_DIM);
 } // ArcGauge
 
 // Horizontal slider: dim track, accent fill and round thumb
@@ -386,66 +500,135 @@ static void Slider(int x, int y, int w, int percent)
     gfx->fillSmoothCircle(x + fill, y + 3, 3, COL_FG, COL_ACCENT);
 } // Slider
 
-// Small pill-style indicator, lit or dimmed
-static void Chip(int x, int y, int w, const char* text, bool on)
+// Plain level bar
+static void Bar(int x, int y, int w, int percent, uint16_t color = COL_ACCENT)
 {
-    gfx->fillSmoothRoundRect(x, y, w, 18, 5, on ? COL_ACCENT : COL_LED_OFF, COL_PANEL);
-    gfx->setTextDatum(MC_DATUM);
-    gfx->setTextColor(on ? COL_FG : COL_DIM, on ? COL_ACCENT : COL_LED_OFF);
-    gfx->drawString(text, x + w / 2, y + 9, 2);
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    gfx->fillSmoothRoundRect(x, y, w, 8, 4, COL_LED_OFF, COL_PANEL);
+    int fill = w * percent / 100;
+    if (fill > 8) gfx->fillSmoothRoundRect(x, y, fill, 8, 4, color, COL_PANEL);
+} // Bar
+
+// Small pill-style indicator, lit or dimmed
+static void Chip(int x, int y, int w, const char* text, bool on, uint16_t onColor = COL_ACCENT)
+{
+    gfx->fillSmoothRoundRect(x, y, w, 18, 5, on ? onColor : COL_LED_OFF, COL_PANEL);
+    Text(x + w / 2, y + 9, text, 2, MC_DATUM, on ? COL_FG : COL_DIM, on ? onColor : COL_LED_OFF);
 } // Chip
+
+// Arrow (compass needle) pointing 'deg' degrees clockwise from up
+static void Arrow(int cx, int cy, int len, int deg, uint16_t color)
+{
+    float a = deg * 3.14159265f / 180.0f;
+    float s = sinf(a), c = cosf(a);
+    int tipX = cx + (int)(len * s), tipY = cy - (int)(len * c);
+    int bx = cx - (int)(len * 0.55f * s), by = cy + (int)(len * 0.55f * c);
+    int lx = bx + (int)(len * 0.45f * c), ly = by + (int)(len * 0.45f * s);
+    int rx = bx - (int)(len * 0.45f * c), ry = by - (int)(len * 0.45f * s);
+    gfx->fillTriangle(tipX, tipY, lx, ly, cx, cy, color);
+    gfx->fillTriangle(tipX, tipY, rx, ry, cx, cy, COL_DIM);
+} // Arrow
+
+// Word-wrapped text, font 2, up to 'maxLines' lines. Returns number of lines drawn.
+static int Wrapped(int x, int y, int w, const String& text, int maxLines, uint16_t color)
+{
+    String msg = text;
+    int line = 0;
+    while (msg.length() > 0 && line < maxLines)
+    {
+        String part = msg;
+        while (gfx->textWidth(part, 2) > w && part.length() > 1)
+        {
+            int cut = part.lastIndexOf(' ');
+            part = cut > 0 ? part.substring(0, cut) : part.substring(0, part.length() - 1);
+        } // while
+        Text(x, y + line * 18, part.c_str(), 2, TL_DATUM, color);
+        msg = msg.substring(part.length());
+        msg.trim();
+        line++;
+    } // while
+    return line;
+} // Wrapped
+
+// -----
+// Header and footer
 
 static void DrawHeader()
 {
     bool busAlive = millis() - lastActivityAt < 2000UL && VanBusRx.GetCount() > 0;
 
-    // Header strip
     gfx->fillSmoothRoundRect(0, 0, SCREEN_W, HEADER_H, 8, COL_PANEL, COL_BG);
     gfx->drawFastHLine(0, HEADER_H, SCREEN_W, COL_ACCENT);
 
-    // Tabs following the current page
-    static const char* const tabNames[N_SCREENS] = { "ENGINE", "MEDIA", "TRIP" };
-    static const int tabX[N_SCREENS] = { 8, 76, 136 };
-    static const int tabW[N_SCREENS] = { 60, 52, 40 };
-    for (int i = 0; i < N_SCREENS; i++)
+    // Page tabs
+    int x = 6;
+    for (int i = 0; i < N_PAGES; i++)
     {
-        bool active = i == currentScreen;
-        gfx->setTextDatum(TL_DATUM);
-        gfx->setTextColor(active ? COL_FG : COL_DIM, COL_PANEL);
-        gfx->drawString(tabNames[i], tabX[i], 7, 2);
-        if (active) gfx->fillRect(tabX[i], HEADER_H - 3, tabW[i], 3, COL_ACCENT);
+        bool active = i == currentPage;
+        int w = gfx->textWidth(pageTabs[i], 2);
+        Text(x, 7, pageTabs[i], 2, TL_DATUM, active ? COL_FG : COL_DIM);
+        if (active) gfx->fillRect(x - 2, HEADER_H - 3, w + 4, 3, COL_ACCENT);
+        x += w + 11;
     } // for
 
-    // Bus liveness dot
-    gfx->fillSmoothCircle(196, HEADER_H / 2, 5, busAlive ? COL_OK : COL_DIM, COL_PANEL);
-
-    // Contact key position
-    gfx->setTextDatum(ML_DATUM);
-    gfx->setTextColor(COL_DIM, COL_PANEL);
-    gfx->drawString(st.contactKeyPosition.length() > 0 ? st.contactKeyPosition.c_str() : "", 208, HEADER_H / 2, 2);
-
-    // Exterior temperature, right aligned
-    String t = st.exteriorTemp.length() > 0 ? st.exteriorTemp + " " + TempUnitStr() : "";
-    gfx->setTextDatum(MR_DATUM);
-    gfx->setTextColor(COL_ACCENT, COL_PANEL);
-    gfx->drawString(t, SCREEN_W - 8, HEADER_H / 2, 2);
+    // Bus liveness dot and exterior temperature on the right
+    gfx->fillSmoothCircle(SCREEN_W - 80, HEADER_H / 2, 5, busAlive ? COL_OK : COL_DIM, COL_PANEL);
+    String t = V(K_exterior_temp).length() > 0 ? V(K_exterior_temp) + " " + TempUnitStr() : "";
+    Text(SCREEN_W - 8, HEADER_H / 2, t.c_str(), 2, MR_DATUM, COL_ACCENT);
 } // DrawHeader
 
 static void DrawFooter()
 {
-    for (int i = 0; i < N_SCREENS; i++)
+    for (int i = 0; i < N_PAGES; i++)
     {
-        gfx->fillSmoothCircle(SCREEN_W / 2 + (i - 1) * 16, PANEL_BOTTOM + 12, 3, i == currentScreen ? COL_ACCENT : COL_DIM, COL_BG);
+        gfx->fillSmoothCircle(SCREEN_W / 2 + (i - 3) * 14 - 7, PANEL_BOTTOM + 12, 3, i == currentPage ? COL_ACCENT : COL_DIM, COL_BG);
     } // for
-
     String ws = "WS " + String(nWebSocketConnections);
-    gfx->setTextDatum(MR_DATUM);
-    gfx->setTextColor(COL_DIM, COL_BG);
-    gfx->drawString(ws, SCREEN_W - 8, PANEL_BOTTOM + 12, 2);
-
-    gfx->setTextDatum(ML_DATUM);
-    gfx->drawString("tap: next page", 8, PANEL_BOTTOM + 12, 2);
+    Text(SCREEN_W - 8, PANEL_BOTTOM + 12, ws.c_str(), 2, MR_DATUM, COL_DIM, COL_BG);
+    Text(8, PANEL_BOTTOM + 12, OrDash(V(K_contact_key_position), ""), 2, ML_DATUM, COL_DIM, COL_BG);
 } // DrawFooter
+
+// -----
+// Pages
+
+static void DrawClock()
+{
+    Panel(0, PANEL_Y, SCREEN_W, PANEL_H);
+
+    char buf[48];
+    if (ClockIsSet())
+    {
+        static const char* const dayNames[] = { "Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday" };  // 1970-01-01 was a Thursday
+        static const char* const monthNames[] = { "", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+        uint32_t t = ClockNowLocal();
+        int32_t days = (int32_t)(t / 86400UL);
+        uint32_t secs = t % 86400UL;
+        int y, m, d;
+        CivilFromDays(days, y, m, d);
+        snprintf(buf, sizeof(buf), "%02lu:%02lu", (unsigned long)(secs / 3600), (unsigned long)((secs / 60) % 60));
+        Text(SCREEN_W / 2, PANEL_Y + 14, buf, 7, TC_DATUM, COL_FG);
+        snprintf(buf, sizeof(buf), "%s, %d %s %d", dayNames[days % 7], d, monthNames[m], y);
+        Text(SCREEN_W / 2, PANEL_Y + 74, buf, 2, TC_DATUM, COL_ACCENT);
+    }
+    else
+    {
+        Text(SCREEN_W / 2, PANEL_Y + 14, "--:--", 7, TC_DATUM, COL_DIM);
+        Text(SCREEN_W / 2, PANEL_Y + 74, "time not set (connect a browser)", 2, TC_DATUM, COL_DIM);
+    } // if
+
+    // Exterior temperature, large
+    String ext = V(K_exterior_temp).length() > 0 ? V(K_exterior_temp) + " " + TempUnitStr() : "-- " + String(TempUnitStr());
+    Text(SCREEN_W / 2, PANEL_Y + 100, "Exterior", 2, TC_DATUM, COL_DIM);
+    Text(SCREEN_W / 2, PANEL_Y + 118, ext.c_str(), 4, TC_DATUM, COL_FG);
+
+    // Status chips
+    int cy = PANEL_BOTTOM - 28;
+    Chip(14, cy, 70, OrDash(V(K_contact_key_position), "KEY"), On(K_contact_key_position) || Is(K_contact_key_position, "ACC"));
+    Chip(92, cy, 70, "LOCKED", On(K_doors_locked));
+    Chip(170, cy, 60, "DOOR", On(K_door_open), COL_WARN);
+    Chip(238, cy, 68, "ENGINE", On(K_engine_running), COL_OK);
+} // DrawClock
 
 static void DrawInstruments()
 {
@@ -453,42 +636,76 @@ static void DrawInstruments()
 
     // Fuel: red below 13 %, green above
     static const TArcZone fuelZones[] = { { 13, COL_ZONE_RED }, { 100, COL_ZONE_GREEN } };
-    int fuel = st.fuelLevel.length() > 0 ? st.fuelLevel.toInt() : -1;
-    String fuelStr = fuel >= 0 ? String(fuel) : "--";
-    ArcGauge(80, PANEL_Y + 74, 40, fuelZones, 2, fuel, fuelStr.c_str(), "%", "FUEL");
+    int fuel = V(K_fuel_level).length() > 0 ? V(K_fuel_level).toInt() : -1;
+    ArcGauge(78, PANEL_Y + 64, 34, fuelZones, 2, fuel, OrDash(V(K_fuel_level), "--"), OrDash(V(K_fuel_level_unit), "%"), "FUEL");
 
     // Coolant: 50..130 degrees C; blue below 70, green to 110, red above
     static const TArcZone coolZones[] = { { 25, COL_ZONE_BLUE }, { 75, COL_ZONE_GREEN }, { 100, COL_ZONE_RED } };
-    int coolPct = -1;
-    if (st.coolantTemp.length() > 0) coolPct = (st.coolantTemp.toInt() - 50) * 100 / 80;
-    String coolStr = st.coolantTemp.length() > 0 ? st.coolantTemp : "--";
-    ArcGauge(240, PANEL_Y + 74, 40, coolZones, 3, coolPct, coolStr.c_str(), TempUnitStr(), "COOLANT");
+    int coolPct = V(K_coolant_temp).length() > 0 ? (V(K_coolant_temp).toInt() - 50) * 100 / 80 : -1;
+    ArcGauge(242, PANEL_Y + 64, 34, coolZones, 3, coolPct, OrDash(V(K_coolant_temp), "--"), TempUnitStr(), "COOLANT");
+
+    // Gear between the gauges
+    String gear = V(K_in_reverse) == "YES" ? "R" : OrDash(V(K_chosen_gear), "-");
+    Text(SCREEN_W / 2, PANEL_Y + 18, "GEAR", 2, TC_DATUM, COL_DIM);
+    Text(SCREEN_W / 2, PANEL_Y + 34, gear.c_str(), 4, TC_DATUM, COL_FG);
 
     // Speed and engine speed
-    int y = PANEL_Y + 108;
-    gfx->setTextDatum(TL_DATUM);
-    gfx->setTextColor(COL_FG, COL_PANEL);
-    gfx->drawString(OrDash(st.vehicleSpeed, "--"), 14, y, 6);
-    int sw = gfx->textWidth(OrDash(st.vehicleSpeed, "--"), 6);
-    gfx->setTextColor(COL_DIM, COL_PANEL);
-    gfx->drawString(SpeedUnitStr(), 14 + sw + 6, y + 28, 2);
+    int y = PANEL_Y + 96;
+    Text(14, y, OrDash(V(K_vehicle_speed), "--"), 6, TL_DATUM, COL_FG);
+    int sw = gfx->textWidth(OrDash(V(K_vehicle_speed), "--"), 6);
+    Text(14 + sw + 6, y + 28, SpeedUnitStr(), 2, TL_DATUM, COL_DIM);
+    Text(SCREEN_W - 44, y, OrDash(V(K_engine_rpm), "---"), 6, TR_DATUM, COL_FG);
+    Text(SCREEN_W - 40, y + 28, "rpm", 2, TL_DATUM, COL_DIM);
 
-    gfx->setTextDatum(TR_DATUM);
-    gfx->setTextColor(COL_FG, COL_PANEL);
-    gfx->drawString(OrDash(st.engineRpm, "---"), SCREEN_W - 44, y, 6);
-    gfx->setTextDatum(TL_DATUM);
-    gfx->setTextColor(COL_DIM, COL_PANEL);
-    gfx->drawString("rpm", SCREEN_W - 40, y + 28, 2);
+    // Odometer, power, torque
+    y = PANEL_Y + 146;
+    String odo = V(K_odometer_1).length() > 0 ? V(K_odometer_1) + " " + DistanceUnitStr() : "--";
+    Text(14, y, odo.c_str(), 2, TL_DATUM, COL_FG);
+    String pwr = V(K_delivered_power).length() > 0 ? V(K_delivered_power) + " HP" : "";
+    String trq = V(K_delivered_torque).length() > 0 ? V(K_delivered_torque) + " Nm" : "";
+    Text(SCREEN_W - 14, y, (pwr + (pwr.length() && trq.length() ? "   " : "") + trq).c_str(), 2, TR_DATUM, COL_FG);
+
+    // Lights and door chips
+    int cy = PANEL_BOTTOM - 24;
+    const String& l = V(K_lights);
+    Chip(14, cy, 54, "DOOR", On(K_door_open), COL_WARN);
+    Chip(74, cy, 54, "LOW", l.indexOf("DIPPED_BEAM") >= 0, COL_OK);
+    Chip(134, cy, 54, "HIGH", l.indexOf("HIGH_BEAM") >= 0);
+    Chip(194, cy, 54, "FOG", l.indexOf("FOG") >= 0);
+    Chip(254, cy, 24, "<", l.indexOf("INDICATOR_LEFT") >= 0, COL_OK);
+    Chip(282, cy, 24, ">", l.indexOf("INDICATOR_RIGHT") >= 0, COL_OK);
+} // DrawInstruments
+
+static void DrawPreflight()
+{
+    Panel(0, PANEL_Y, SCREEN_W, PANEL_H);
+
+    // Oil level (raw 0..~10) and service distance (20,000 km interval, as in the web page)
+    int oil = V(K_oil_level_raw).length() > 0 ? V(K_oil_level_raw).toInt() : -1;
+    LabelValue(14, PANEL_Y + 10, "Oil level", OrDash(V(K_oil_level_raw), "--"));
+    Bar(14, PANEL_Y + 48, 136, oil >= 0 ? oil * 10 : 0, oil >= 0 && oil <= 2 ? COL_WARN : COL_ACCENT);
+
+    long svc = V(K_distance_to_service).length() > 0 ? V(K_distance_to_service).toInt() : -1;
+    String svcStr = svc >= 0 ? V(K_distance_to_service) + " " + DistanceUnitStr() : "--";
+    LabelValue(170, PANEL_Y + 10, "Service in", svcStr.c_str(), svc >= 0 && svc <= 1000 ? COL_WARN : COL_FG);
+    Bar(170, PANEL_Y + 48, 136, svc >= 0 ? (int)(svc * 100 / 20000) : 0, svc >= 0 && svc <= 1000 ? COL_WARN : COL_ACCENT);
+
+    LabelValue(14, PANEL_Y + 66, "Contact key", OrDash(V(K_contact_key_position), "--"));
+    LabelValue(170, PANEL_Y + 66, "Dash brightness", OrDash(V(K_dashboard_programmed_brightness), "--"));
 
     // Status chips
-    int cy = PANEL_BOTTOM - 26;
-    Chip(14, cy, 54, "DOOR", st.doorOpen == "YES");
-    Chip(74, cy, 54, "LOW", st.lights.indexOf("DIPPED_BEAM") >= 0);
-    Chip(134, cy, 54, "HIGH", st.lights.indexOf("HIGH_BEAM") >= 0);
-    Chip(194, cy, 54, "FOG", st.lights.indexOf("FOG") >= 0);
-    Chip(254, cy, 24, "<", st.lights.indexOf("INDICATOR_LEFT") >= 0);
-    Chip(282, cy, 24, ">", st.lights.indexOf("INDICATOR_RIGHT") >= 0);
-} // DrawInstruments
+    int cy = PANEL_Y + 118;
+    Chip(14, cy, 70, "HAZARD", On(K_hazard_lights), COL_WARN);
+    Chip(90, cy, 60, "DOOR", On(K_door_open), COL_WARN);
+    Chip(156, cy, 70, "GLOW", On(K_diesel_glow_plugs), COL_WARN);
+    Chip(232, cy, 74, "LIGHTS", V(K_lights).indexOf("BEAM") >= 0, COL_OK);
+
+    // VIN
+    Text(14, PANEL_Y + 146, "VIN", 2, TL_DATUM, COL_ACCENT);
+    Text(54, PANEL_Y + 146, OrDash(V(K_vin), "-----------------"), 2, TL_DATUM, COL_FG);
+    Text(14, PANEL_Y + 162, "Dash light", 2, TL_DATUM, COL_ACCENT);
+    Text(100, PANEL_Y + 162, OrDash(V(K_dash_light), "--"), 2, TL_DATUM, COL_FG);
+} // DrawPreflight
 
 // Simple speaker glyph for the station tile
 static void SpeakerGlyph(int x, int y)
@@ -499,161 +716,372 @@ static void SpeakerGlyph(int x, int y)
     gfx->drawArc(x + 22, y + 14, 16, 14, 120, 240, COL_FG, COL_ACCENT, false);
 } // SpeakerGlyph
 
+static const char* MediaStatusStr(const String& s)
+{
+    return
+        s == "PLAY" ? "Playing" :
+        s == "PAUSE" ? "Paused" :
+        s == "STOPPED" ? "Stopped" :
+        s == "LOADING" ? "Loading" :
+        s == "FAST_FORWARD" ? "Fast forward" :
+        s == "REWIND" ? "Rewind" :
+        s == "SEARCHING" ? "Searching" :
+        s == "EJECT" ? "Eject" :
+        s == "NEXT_TRACK" ? "Next track" :
+        s == "PREVIOUS_TRACK" ? "Previous track" :
+        s.length() > 0 ? s.c_str() : "--";
+} // MediaStatusStr
+
 static void DrawAudio()
 {
     Panel(0, PANEL_Y, SCREEN_W, PANEL_H);
 
+    const String& src = V(K_audio_source);
     const char* title =
-        st.audioSource == "TUNER" ? "Radio" :
-        st.audioSource == "CD" ? "CD player" :
-        st.audioSource == "TAPE" ? "Cassette" :
-        st.audioSource == "CD_CHANGER" ? "CD changer" :
-        st.audioSource == "NAVIGATION" ? "Navigation" :
-        st.headUnitPower == "ON" ? "Head unit" : "Head unit off";
+        src == "TUNER" ? "Radio" :
+        src == "CD" ? "CD player" :
+        src == "TAPE" ? "Cassette" :
+        src == "CD_CHANGER" ? "CD changer" :
+        src == "NAVIGATION" ? "Navigation" :
+        On(K_head_unit_power) ? "Head unit" : "Head unit off";
 
-    // Station tile
     gfx->fillSmoothRoundRect(14, PANEL_Y + 12, 56, 56, 10, COL_ACCENT, COL_PANEL);
     SpeakerGlyph(26, PANEL_Y + 26);
+    Text(82, PANEL_Y + 10, title, 4, TL_DATUM, COL_ACCENT);
 
-    // Title and band / preset
-    gfx->setTextDatum(TL_DATUM);
-    gfx->setTextColor(COL_ACCENT, COL_PANEL);
-    gfx->drawString(title, 82, PANEL_Y + 10, 4);
+    int cy = PANEL_BOTTOM - 24;
 
-    if (st.audioSource == "TUNER")
+    if (src == "TUNER")
     {
-        String band = st.tunerBand;
-        if (st.tunerMemory.length() > 0 && st.tunerMemory != "-") band += "  P" + st.tunerMemory;
-        gfx->setTextDatum(TR_DATUM);
-        gfx->setTextColor(COL_DIM, COL_PANEL);
-        gfx->drawString(band, SCREEN_W - 14, PANEL_Y + 16, 2);
+        String band = V(K_tuner_band);
+        if (V(K_tuner_memory).length() > 0 && V(K_tuner_memory) != "-") band += "  P" + V(K_tuner_memory);
+        Text(SCREEN_W - 14, PANEL_Y + 16, band.c_str(), 2, TR_DATUM, COL_DIM);
 
-        // Frequency and unit
-        gfx->setTextDatum(TL_DATUM);
-        gfx->setTextColor(COL_FG, COL_PANEL);
-        gfx->drawString(OrDash(st.frequency, "---.-"), 82, PANEL_Y + 38, 6);
-        int fw = gfx->textWidth(OrDash(st.frequency, "---.-"), 6);
-        gfx->setTextColor(COL_DIM, COL_PANEL);
-        gfx->drawString(OrDash(st.frequencyUnit, ""), 82 + fw + 8, PANEL_Y + 66, 2);
+        String freq = V(K_frequency);
+        if (V(K_frequency_h).length() > 0 && V(K_frequency_h) != "-") freq += V(K_frequency_h);
+        Text(82, PANEL_Y + 38, OrDash(freq, "---.-"), 6, TL_DATUM, COL_FG);
+        int fw = gfx->textWidth(OrDash(freq, "---.-"), 6);
+        Text(82 + fw + 8, PANEL_Y + 66, OrDash(V(K_frequency_unit), ""), 2, TL_DATUM, COL_DIM);
 
-        // RDS name
-        gfx->setTextColor(COL_FG, COL_PANEL);
-        gfx->drawString(OrDash(st.rdsText, ""), 14, PANEL_Y + 92, 4);
+        Text(14, PANEL_Y + 88, OrDash(V(K_rds_text), ""), 4, TL_DATUM, COL_FG);
+
+        String pty = V(K_pty_16).length() > 0 ? "PTY " + V(K_pty_16) : "";
+        Text(14, PANEL_Y + 118, pty.c_str(), 2, TL_DATUM, COL_DIM);
+        String pi = V(K_pi_country).length() > 0 && V(K_pi_country) != "--" ? "PI " + V(K_pi_country) : "";
+        Text(170, PANEL_Y + 118, pi.c_str(), 2, TL_DATUM, COL_DIM);
+        String sig = V(K_signal_strength).length() > 0 ? "Signal " + V(K_signal_strength) : "";
+        Text(SCREEN_W - 14, PANEL_Y + 118, sig.c_str(), 2, TR_DATUM, COL_DIM);
+
+        String search = V(K_search_mode).length() > 0 && V(K_search_mode) != "NONE" ? "Search: " + V(K_search_mode) : "";
+        if (On(K_search_manual)) search += "  MAN";
+        if (V(K_search_sensitivity).length() > 0) search += "  " + V(K_search_sensitivity);
+        Text(14, PANEL_Y + 136, search.c_str(), 2, TL_DATUM, COL_DIM);
+
+        Chip(14, cy, 44, "INFO", On(K_info_traffic));
+        Chip(62, cy, 40, "EXT", On(K_ext_mute));
+        Chip(106, cy, 48, "MUTE", On(K_mute), COL_WARN);
+        Chip(158, cy, 40, "REG", On(K_regional));
+        Chip(202, cy, 32, "TA", On(K_ta_selected) && ! On(K_ta_not_available));
+        Chip(238, cy, 40, "RDS", On(K_rds_selected) && ! On(K_rds_not_available));
+        Chip(282, cy, 24, "L", On(K_loudness));
     }
-    else if (st.audioSource == "CD" || st.audioSource == "CD_CHANGER")
+    else if (src == "TAPE")
     {
-        gfx->setTextDatum(TL_DATUM);
-        gfx->setTextColor(COL_FG, COL_PANEL);
-        gfx->drawString(OrDash(st.cdTrackTime, "--:--"), 82, PANEL_Y + 38, 6);
-        gfx->setTextColor(COL_DIM, COL_PANEL);
-        gfx->drawString("Track", 14, PANEL_Y + 96, 2);
-        gfx->setTextColor(COL_FG, COL_PANEL);
-        gfx->drawString(OrDash(st.cdTrack, "--"), 70, PANEL_Y + 90, 4);
+        LabelValue(82, PANEL_Y + 44, "Side", OrDash(V(K_tape_side), "-"));
+        LabelValue(170, PANEL_Y + 44, "Status", MediaStatusStr(V(K_tape_status)));
+        Chip(14, cy, 56, "LOUD", On(K_loudness));
+        Chip(106, cy, 48, "MUTE", On(K_mute), COL_WARN);
+    }
+    else if (src == "CD" || src == "CD_CHANGER")
+    {
+        bool ch = src == "CD_CHANGER";
+        const String& tm = ch ? V(K_cd_changer_track_time) : V(K_cd_track_time);
+        Text(82, PANEL_Y + 38, OrDash(tm, "--:--"), 6, TL_DATUM, COL_FG);
+
+        String track = OrDash(ch ? V(K_cd_changer_current_track) : V(K_cd_current_track), "--");
+        track += " / " + String(OrDash(ch ? V(K_cd_changer_total_tracks) : V(K_cd_total_tracks), "--"));
+        LabelValue(14, PANEL_Y + 92, "Track", track.c_str());
+        if (ch) LabelValue(150, PANEL_Y + 92, "Disc", OrDash(V(K_cd_changer_current_disc), "-"));
+        else LabelValue(150, PANEL_Y + 92, "Total", OrDash(V(K_cd_total_time), "--:--"));
+        LabelValue(236, PANEL_Y + 92, "Status", MediaStatusStr(ch ? V(K_cd_changer_status) : V(K_cd_status)), COL_FG, 2);
+
+        if (ch)
+        {
+            // Disc slots
+            static const TDisplayKey discKeys[6] = { K_cd_changer_disc_1_present, K_cd_changer_disc_2_present, K_cd_changer_disc_3_present,
+                                                     K_cd_changer_disc_4_present, K_cd_changer_disc_5_present, K_cd_changer_disc_6_present };
+            int cur = V(K_cd_changer_current_disc).toInt();
+            for (int i = 0; i < 6; i++)
+            {
+                char n[2] = { (char)('1' + i), 0 };
+                Chip(14 + i * 40, PANEL_Y + 138, 34, n, On(discKeys[i]), cur == i + 1 ? COL_ACCENT : COL_DIM);
+            } // for
+        } // if
+
+        Chip(14, cy, 56, "LOUD", On(K_loudness));
+        Chip(74, cy, 64, "RANDOM", On(ch ? K_cd_changer_random : K_cd_random));
+        Chip(142, cy, 48, "MUTE", On(K_mute), COL_WARN);
+    }
+    else
+    {
+        Text(82, PANEL_Y + 44, On(K_head_unit_power) ? "No source" : "", 2, TL_DATUM, COL_DIM);
     } // if
 
-    // Volume slider
-    int vol = st.volume.length() > 0 ? st.volume.toInt() : -1;
-    gfx->setTextDatum(TL_DATUM);
-    gfx->setTextColor(COL_DIM, COL_PANEL);
-    gfx->drawString("Volume", 14, PANEL_Y + 128, 2);
-    gfx->setTextDatum(TR_DATUM);
-    gfx->setTextColor(COL_FG, COL_PANEL);
-    gfx->drawString(vol >= 0 ? st.volume.c_str() : "--", SCREEN_W - 14, PANEL_Y + 124, 4);
-    Slider(14, PANEL_Y + 156, SCREEN_W - 28 - 50, vol >= 0 ? vol * 100 / 30 : 0);
+    // Volume (always)
+    int vol = V(K_volume).length() > 0 ? V(K_volume).toInt() : -1;
+    Text(SCREEN_W - 14, cy - 2, vol >= 0 ? ("Vol " + V(K_volume)).c_str() : "", 2, BR_DATUM, COL_DIM);
+    if (src == "TUNER") return;  // Chip row already full on the radio page
+    Slider(200, cy + 6, SCREEN_W - 14 - 200 - 8, vol >= 0 ? vol * 100 / 30 : 0);
 } // DrawAudio
 
-static void TripRow(int x, int y, const char* label, const char* value, uint16_t color = COL_FG)
+static void DrawTripValues(int x, int y, int tab)
 {
-    gfx->setTextDatum(TL_DATUM);
-    gfx->setTextColor(COL_ACCENT, COL_PANEL);
-    gfx->drawString(label, x, y, 2);
-    gfx->setTextColor(color, COL_PANEL);
-    gfx->drawString(value, x, y + 18, 4);
-} // TripRow
+    const String& cons = tab == 2 ? V(K_avg_consumption_2) : V(K_avg_consumption_1);
+    const String& spd = tab == 2 ? V(K_avg_speed_2) : V(K_avg_speed_1);
+    const String& dist = tab == 2 ? V(K_distance_2) : V(K_distance_1);
+
+    String c = OrDash(cons, "--.-"); c += " " + String(OrDash(V(K_fuel_consumption_unit), "l/100 km"));
+    String s = OrDash(spd, "--"); s += " " + String(SpeedUnitStr());
+    String d = OrDash(dist, "--"); d += " " + String(DistanceUnitStr());
+    LabelValue(x, y, "Average consumption", c.c_str());
+    LabelValue(x, y + 46, "Average speed", s.c_str());
+    LabelValue(x, y + 92, "Distance", d.c_str());
+} // DrawTripValues
 
 static void DrawTrip()
 {
     Panel(0, PANEL_Y, SCREEN_W, PANEL_H);
 
-    String odo = st.odometer.length() > 0 ? st.odometer + " " + DistanceUnitStr() : "--";
-    TripRow(14, PANEL_Y + 10, "Odometer", odo.c_str());
+    // Tabs 1 / 2
+    Chip(14, PANEL_Y + 10, 34, "1", tripTab == 1);
+    Chip(52, PANEL_Y + 10, 34, "2", tripTab == 2);
+    Text(96, PANEL_Y + 19, tripTab == 1 ? "Trip computer 1" : "Trip computer 2", 2, ML_DATUM, COL_ACCENT);
 
-    String dte = st.distanceToEmpty.length() > 0 ? st.distanceToEmpty + " " + DistanceUnitStr() : "--";
-    TripRow(170, PANEL_Y + 10, "Range", dte.c_str());
+    DrawTripValues(14, PANEL_Y + 38, tripTab);
 
-    TripRow(14, PANEL_Y + 62, "Inst. consumption", OrDash(st.instConsumption, "--"));
-
-    const char* doors =
-        st.doorOpen == "YES" ? "OPEN" :
-        st.doorsLocked == "YES" ? "LOCKED" :
-        st.doorsLocked == "NO" ? "UNLOCKED" : "--";
-    TripRow(170, PANEL_Y + 62, "Doors", doors, st.doorOpen == "YES" ? COL_WARN : COL_FG);
-
-    String lights = st.lights;
-    lights.replace("_", " ");
-    lights.trim();
-    gfx->setTextDatum(TL_DATUM);
-    gfx->setTextColor(COL_ACCENT, COL_PANEL);
-    gfx->drawString("Lights", 14, PANEL_Y + 114, 2);
-    gfx->setTextColor(COL_FG, COL_PANEL);
-    gfx->drawString(lights.length() > 0 ? lights.c_str() : "OFF", 14, PANEL_Y + 132, 2);
-
-    gfx->setTextColor(COL_ACCENT, COL_PANEL);
-    gfx->drawString("Street", 14, PANEL_Y + 152, 2);
-    gfx->setTextColor(COL_FG, COL_PANEL);
-    gfx->drawString(OrDash(st.currentStreet, ""), 70, PANEL_Y + 152, 2);
+    // Instant consumption and range on the right
+    String ic = OrDash(V(K_inst_consumption), "--.-"); ic += " " + String(OrDash(V(K_fuel_consumption_unit), "l/100 km"));
+    String dte = OrDash(V(K_distance_to_empty), "---"); dte += " " + String(DistanceUnitStr());
+    LabelValue(186, PANEL_Y + 38, "Instant", ic.c_str());
+    LabelValue(186, PANEL_Y + 84, "Range", dte.c_str());
+    String odo = V(K_odometer_1).length() > 0 ? V(K_odometer_1) + " " + DistanceUnitStr() : "--";
+    LabelValue(186, PANEL_Y + 130, "Odometer", odo.c_str(), COL_FG, 2);
 } // DrawTrip
 
-// Popup card with a warning triangle and word-wrapped message
-static void DrawPopup()
+static void DrawNav()
 {
-    const int x = 18, y = 56, w = SCREEN_W - 36, h = 118;
+    Panel(0, PANEL_Y, SCREEN_W, PANEL_H);
 
-    gfx->fillSmoothRoundRect(x, y, w, h, 12, COL_PANEL, COL_BG);
-    gfx->drawSmoothRoundRect(x, y, 12, 10, w, h, COL_WARN, COL_PANEL);
+    bool guidance = V(K_large_screen) == "GUIDANCE" || V(K_satnav_guidance_status).indexOf("IN_GUIDANCE") >= 0;
 
-    // Warning triangle
-    int tx = x + 34, ty = y + h / 2 - 6;
-    gfx->fillTriangle(tx, ty - 22, tx - 24, ty + 18, tx + 24, ty + 18, COL_WARN);
-    gfx->fillTriangle(tx, ty - 14, tx - 17, ty + 14, tx + 17, ty + 14, COL_PANEL);
-    gfx->setTextDatum(MC_DATUM);
-    gfx->setTextColor(COL_WARN, COL_PANEL);
-    gfx->drawString("!", tx, ty + 2, 4);
+    // Current street (wrapped)
+    Text(14, PANEL_Y + 10, "Current location", 2, TL_DATUM, COL_ACCENT);
+    int lines = Wrapped(14, PANEL_Y + 28, 230, V(K_satnav_curr_street).length() > 0 ? V(K_satnav_curr_street) : String("--"), 3, COL_FG);
 
-    // Message, wrapped to the space right of the icon
-    gfx->setTextDatum(TL_DATUM);
-    gfx->setTextColor(COL_FG, COL_PANEL);
-    String msg = st.popupMessage;
-    const int maxChars = 24;
-    int line = 0;
-    while (msg.length() > 0 && line < 4)
+    // Compass: current heading
+    int hdg = V(K_satnav_curr_heading).length() > 0 ? V(K_satnav_curr_heading).toInt() : -1;
+    gfx->drawSmoothCircle(SCREEN_W - 44, PANEL_Y + 40, 26, COL_DIM, COL_PANEL);
+    Text(SCREEN_W - 44, PANEL_Y + 6, "N", 2, TC_DATUM, COL_DIM);
+    if (hdg >= 0) Arrow(SCREEN_W - 44, PANEL_Y + 40, 20, hdg, COL_ACCENT);
+
+    int y = PANEL_Y + 32 + lines * 18 + 6;
+    if (y < PANEL_Y + 76) y = PANEL_Y + 76;
+
+    // GPS
+    Chip(14, y, 54, "GPS", On(K_satnav_gps_fix), COL_OK);
+    String gs = V(K_satnav_gps_speed).length() > 0 ? V(K_satnav_gps_speed) : "";
+    Text(74, y + 9, gs.c_str(), 2, ML_DATUM, COL_FG);
+    String hs = hdg >= 0 ? String(hdg) + " deg" : "";
+    Text(SCREEN_W - 14, y + 9, hs.c_str(), 2, MR_DATUM, COL_DIM);
+
+    y += 26;
+    if (guidance)
     {
-        String part = msg;
-        if ((int)part.length() > maxChars)
+        Text(14, y, "Guidance", 2, TL_DATUM, COL_ACCENT);
+        String turn = V(K_satnav_turn_at).length() > 0 ? "Turn in " + V(K_satnav_turn_at) : "";
+        Text(14, y + 18, turn.c_str(), 4, TL_DATUM, COL_FG);
+        String dest = V(K_satnav_distance_to_dest_via_road).length() > 0 ? V(K_satnav_distance_to_dest_via_road) : "--";
+        String mins = V(K_satnav_minutes_to_travel).length() > 0 ? V(K_satnav_minutes_to_travel) + " min" : "";
+        Text(14, y + 48, ("To destination: " + dest + "   " + mins).c_str(), 2, TL_DATUM, COL_DIM);
+
+        int hd = V(K_satnav_heading_to_dest).length() > 0 ? V(K_satnav_heading_to_dest).toInt() : -1;
+        if (hd >= 0)
         {
-            int cut = part.lastIndexOf(' ', maxChars);
-            if (cut <= 0) cut = maxChars;
-            part = msg.substring(0, cut);
-            msg = msg.substring(cut);
-            msg.trim();
-        }
-        else
-        {
-            msg = "";
+            Text(SCREEN_W - 44, y, "DEST", 2, TC_DATUM, COL_DIM);
+            Arrow(SCREEN_W - 44, y + 40, 18, hd, COL_OK);
         } // if
-        gfx->drawString(part, x + 74, y + 22 + line * 20, 2);
-        line++;
-    } // while
+        if (On(K_satnav_arrived_at_destination)) Text(14, y + 66, "Arrived at destination", 2, TL_DATUM, COL_OK);
+        else if (On(K_satnav_destination_not_accessible)) Text(14, y + 66, "Destination not accessible", 2, TL_DATUM, COL_WARN);
+    }
+    else
+    {
+        Text(14, y + 4, "No guidance active", 2, TL_DATUM, COL_DIM);
+    } // if
+} // DrawNav
 
-    gfx->setTextColor(COL_DIM, COL_PANEL);
-    gfx->setTextDatum(BC_DATUM);
-    gfx->drawString("tap to dismiss", x + w / 2, y + h - 6, 2);
-} // DrawPopup
-
-static bool PopupActive()
+static void DrawClimate()
 {
-    return popupUntil != 0 && (long)(millis() - popupUntil) < 0 && st.popupMessage.length() > 0;
-} // PopupActive
+    Panel(0, PANEL_Y, SCREEN_W, PANEL_H);
+
+    int cy = PANEL_Y + 12;
+    Chip(14, cy, 56, "A/C", On(K_ac_enabled), COL_OK);
+    Chip(76, cy, 90, "COMPRESSOR", On(K_ac_compressor));
+    Chip(172, cy, 64, "RECIRC", On(K_recirc));
+    Chip(242, cy, 64, "REAR", On(K_rear_heater_1), COL_WARN);
+
+    int fanSet = V(K_set_fan_speed).length() > 0 ? V(K_set_fan_speed).toInt() : -1;
+    int fanRep = V(K_reported_fan_speed).length() > 0 ? V(K_reported_fan_speed).toInt() : -1;
+    String fan = fanRep >= 0 ? String(fanRep) : "--";
+    if (fanSet >= 0) fan += "  (set " + String(fanSet) + ")";
+    LabelValue(14, PANEL_Y + 44, "Fan speed", fan.c_str());
+    Bar(14, PANEL_Y + 82, SCREEN_W - 28, fanRep >= 0 ? fanRep * 100 / 7 : 0);
+
+    String cp = V(K_condenser_pressure_bar).length() > 0 ? V(K_condenser_pressure_bar) + " bar" : "--";
+    LabelValue(14, PANEL_Y + 104, "Condenser pressure", cp.c_str());
+    String ev = V(K_evaporator_temp).length() > 0 ? V(K_evaporator_temp) + " " + TempUnitStr() : "--";
+    LabelValue(170, PANEL_Y + 104, "Evaporator", ev.c_str());
+
+    String ext = V(K_exterior_temp).length() > 0 ? V(K_exterior_temp) + " " + TempUnitStr() : "--";
+    LabelValue(14, PANEL_Y + 146, "Exterior", ext.c_str(), COL_FG, 2);
+    String cool = V(K_coolant_temp).length() > 0 ? V(K_coolant_temp) + " " + TempUnitStr() : "--";
+    LabelValue(170, PANEL_Y + 146, "Coolant", cool.c_str(), COL_FG, 2);
+} // DrawClimate
+
+static void DrawSystem()
+{
+    Panel(0, PANEL_Y, SCREEN_W, PANEL_H);
+
+    char buf[48];
+    Text(14, PANEL_Y + 10, "VanLiveConnect " VAN_LIVE_CONNECT_VERSION, 2, TL_DATUM, COL_ACCENT);
+
+  #ifdef WIFI_AP_MODE
+    Text(14, PANEL_Y + 30, "Wi-Fi " WIFI_SSID, 2, TL_DATUM, COL_FG);
+    Text(14, PANEL_Y + 48, "http://" IP_ADDR "/MFD.html", 2, TL_DATUM, COL_FG);
+  #else
+    Text(14, PANEL_Y + 30, "Wi-Fi " WIFI_SSID, 2, TL_DATUM, COL_FG);
+    Text(14, PANEL_Y + 48, V(K_esp_ip_address).c_str(), 2, TL_DATUM, COL_FG);
+  #endif
+
+    snprintf(buf, sizeof(buf), "Browsers: %d", nWebSocketConnections);
+    LabelValue(14, PANEL_Y + 72, "WebSocket", buf, COL_FG, 2);
+    snprintf(buf, sizeof(buf), "%lu packets", (unsigned long)VanBusRx.GetCount());
+    LabelValue(170, PANEL_Y + 72, "VAN bus", buf, COL_FG, 2);
+
+    unsigned long age = (millis() - lastActivityAt) / 1000;
+    snprintf(buf, sizeof(buf), "%lu s ago", age);
+    LabelValue(14, PANEL_Y + 108, "Last VAN packet", VanBusRx.GetCount() > 0 ? buf : "never", COL_FG, 2);
+    LabelValue(170, PANEL_Y + 108, "Free RAM", OrDash(V(K_esp_free_ram), "--"), COL_FG, 2);
+
+    unsigned long up = millis() / 1000;
+    snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu", up / 3600, (up / 60) % 60, up % 60);
+    LabelValue(14, PANEL_Y + 144, "Uptime", buf, COL_FG, 2);
+    LabelValue(170, PANEL_Y + 144, "Wi-Fi RSSI", OrDash(V(K_esp_wifi_rssi), "--"), COL_FG, 2);
+} // DrawSystem
+
+// -----
+// Popups
+
+static void PopupCard(int& x, int& y, int& w, int& h, uint16_t border)
+{
+    x = 18; y = 52; w = SCREEN_W - 36; h = 126;
+    gfx->fillSmoothRoundRect(x, y, w, h, 12, COL_PANEL, COL_BG);
+    gfx->drawSmoothRoundRect(x, y, 12, 10, w, h, border, COL_PANEL);
+    Text(x + w / 2, y + h - 6, "tap to dismiss", 2, BC_DATUM, COL_DIM);
+} // PopupCard
+
+static void WarningTriangle(int tx, int ty, uint16_t color)
+{
+    gfx->fillTriangle(tx, ty - 22, tx - 24, ty + 18, tx + 24, ty + 18, color);
+    gfx->fillTriangle(tx, ty - 14, tx - 17, ty + 14, tx + 17, ty + 14, COL_PANEL);
+    Text(tx, ty + 2, "!", 4, MC_DATUM, color);
+} // WarningTriangle
+
+static void DrawNotificationPopup()
+{
+    int x, y, w, h;
+    bool warning = V(K_notification_message_on_mfd).endsWith("!");
+    PopupCard(x, y, w, h, warning ? COL_WARN : COL_ACCENT);
+    if (warning) WarningTriangle(x + 34, y + h / 2 - 8, COL_WARN);
+    else
+    {
+        gfx->fillSmoothCircle(x + 34, y + h / 2 - 8, 20, COL_ACCENT, COL_PANEL);
+        Text(x + 34, y + h / 2 - 8, "i", 4, MC_DATUM, COL_FG, COL_ACCENT);
+    } // if
+    Wrapped(x + 72, y + 22, w - 84, V(K_notification_message_on_mfd), 4, COL_FG);
+} // DrawNotificationPopup
+
+static void DrawDoorPopup()
+{
+    int x, y, w, h;
+    PopupCard(x, y, w, h, COL_WARN);
+    WarningTriangle(x + 34, y + h / 2 - 8, COL_WARN);
+    Text(x + 72, y + 18, "Door open", 4, TL_DATUM, COL_FG);
+
+    String which;
+    if (On(K_door_front_left)) which += "front left, ";
+    if (On(K_door_front_right)) which += "front right, ";
+    if (On(K_door_rear_left)) which += "rear left, ";
+    if (On(K_door_rear_right)) which += "rear right, ";
+    if (On(K_door_boot)) which += "boot, ";
+    if (which.endsWith(", ")) which = which.substring(0, which.length() - 2);
+    Wrapped(x + 72, y + 52, w - 84, which, 2, COL_DIM);
+} // DrawDoorPopup
+
+static void DrawAudioPopup()
+{
+    int x, y, w, h;
+    PopupCard(x, y, w, h, COL_ACCENT);
+
+    Text(x + 12, y + 10, "Audio settings", 2, TL_DATUM, COL_ACCENT);
+    Text(x + w - 12, y + 10, OrDash(V(K_audio_source), ""), 2, TR_DATUM, COL_DIM);
+
+    int vol = V(K_volume).length() > 0 ? V(K_volume).toInt() : 0;
+    Text(x + 12, y + 30, "Volume", 2, TL_DATUM, COL_DIM);
+    Text(x + w - 12, y + 26, OrDash(V(K_volume), "--"), 4, TR_DATUM, COL_FG);
+    Slider(x + 74, y + 36, w - 74 - 60, vol * 100 / 30);
+
+    struct { const char* label; TDisplayKey key; } rows[4] = { { "Bass", K_bass }, { "Treble", K_treble }, { "Fader", K_fader }, { "Balance", K_balance } };
+    for (int i = 0; i < 4; i++)
+    {
+        int rx = x + 12 + (i % 2) * (w / 2);
+        int ry = y + 56 + (i / 2) * 26;
+        int v = V(rows[i].key).length() > 0 ? V(rows[i].key).toInt() : 0;
+        Text(rx, ry + 2, rows[i].label, 2, TL_DATUM, COL_DIM);
+        Slider(rx + 56, ry + 6, w / 2 - 56 - 44, (v + 9) * 100 / 18);
+        Text(rx + w / 2 - 16, ry + 2, OrDash(V(rows[i].key), "-"), 2, TR_DATUM, COL_FG);
+    } // for
+
+    Chip(x + 12, y + h - 30, 52, "LOUD", On(K_loudness));
+    Chip(x + 70, y + h - 30, 80, "AUTO-VOL", On(K_auto_volume));
+} // DrawAudioPopup
+
+static void DrawTripPopup()
+{
+    int x, y, w, h;
+    PopupCard(x, y, w, h, COL_ACCENT);
+    if (popupTripTab == "FUE")
+    {
+        Text(x + 12, y + 10, "Fuel", 2, TL_DATUM, COL_ACCENT);
+        String ic = OrDash(V(K_inst_consumption), "--.-"); ic += " " + String(OrDash(V(K_fuel_consumption_unit), "l/100 km"));
+        String dte = OrDash(V(K_distance_to_empty), "---"); dte += " " + String(DistanceUnitStr());
+        LabelValue(x + 12, y + 32, "Instant consumption", ic.c_str());
+        LabelValue(x + 12, y + 72, "Range", dte.c_str());
+    }
+    else
+    {
+        int tab = popupTripTab == "TR2" ? 2 : 1;
+        Text(x + 12, y + 10, tab == 2 ? "Trip computer 2" : "Trip computer 1", 2, TL_DATUM, COL_ACCENT);
+        const String& cons = tab == 2 ? V(K_avg_consumption_2) : V(K_avg_consumption_1);
+        const String& spd = tab == 2 ? V(K_avg_speed_2) : V(K_avg_speed_1);
+        const String& dist = tab == 2 ? V(K_distance_2) : V(K_distance_1);
+        LabelValue(x + 12, y + 32, "Avg. cons.", OrDash(cons, "--.-"), COL_FG, 2);
+        LabelValue(x + 110, y + 32, "Avg. speed", OrDash(spd, "--"), COL_FG, 2);
+        LabelValue(x + 200, y + 32, "Distance", OrDash(dist, "--"), COL_FG, 2);
+    } // if
+} // DrawTripPopup
+
+// -----
+// Redraw
 
 static void Redraw()
 {
@@ -663,17 +1091,31 @@ static void Redraw()
     if (useSprite || ! PopupActive())
     {
         DrawHeader();
-
-        switch (currentScreen)
+        switch (currentPage)
         {
-            case SCR_INSTRUMENTS: DrawInstruments(); break;
-            case SCR_AUDIO: DrawAudio(); break;
-            case SCR_TRIP: DrawTrip(); break;
+            case PG_CLOCK: DrawClock(); break;
+            case PG_INSTRUMENTS: DrawInstruments(); break;
+            case PG_PREFLIGHT: DrawPreflight(); break;
+            case PG_AUDIO: DrawAudio(); break;
+            case PG_TRIP: DrawTrip(); break;
+            case PG_NAV: DrawNav(); break;
+            case PG_CLIMATE: DrawClimate(); break;
+            case PG_SYSTEM: DrawSystem(); break;
         } // switch
         DrawFooter();
     } // if
 
-    if (PopupActive()) DrawPopup();
+    if (PopupActive())
+    {
+        switch (popupKind)
+        {
+            case POPUP_NOTIFICATION: DrawNotificationPopup(); break;
+            case POPUP_DOOR: DrawDoorPopup(); break;
+            case POPUP_AUDIO: DrawAudioPopup(); break;
+            case POPUP_TRIP: DrawTripPopup(); break;
+            default: break;
+        } // switch
+    } // if
 
     if (useSprite) spr.pushSprite(0, 0);
 
@@ -693,15 +1135,27 @@ static void HandleTouch()
     if (PopupActive())
     {
         popupUntil = 0;
+        popupKind = POPUP_NONE;
         fullRedraw = true;
+        dirty = true;
         return;
     } // if
 
-    SwitchScreen((currentScreen + 1) % N_SCREENS);
+    SwitchPage((currentPage + 1) % N_PAGES);
 } // HandleTouch
 
 // -----
 // Public interface
+
+// Show a one-line status text at the bottom of the screen (used during start-up, before the first redraw)
+void DisplayStatusLine(const char* text)
+{
+    tft.setTextDatum(BC_DATUM);
+    tft.setTextPadding(SCREEN_W - 8);
+    tft.setTextColor(COL_DIM, COL_BG);
+    tft.drawString(text, SCREEN_W / 2, SCREEN_H - 4, 2);
+    tft.setTextPadding(0);
+} // DisplayStatusLine
 
 void SetupDisplay()
 {
@@ -739,32 +1193,24 @@ void SetupDisplay()
     dirty = true;
 } // SetupDisplay
 
-// Show a one-line status text at the bottom of the screen (used during start-up, before the first redraw)
-void DisplayStatusLine(const char* text)
-{
-    tft.setTextDatum(BC_DATUM);
-    tft.setTextPadding(SCREEN_W - 8);
-    tft.setTextColor(COL_DIM, COL_BG);
-    tft.drawString(text, SCREEN_W / 2, SCREEN_H - 4, 2);
-    tft.setTextPadding(0);
-} // DisplayStatusLine
-
 void LoopDisplay()
 {
     HandleTouch();
 
     // Popup expired?
-    if (popupUntil != 0 && ! PopupActive())
+    if (popupKind != POPUP_NONE && ! PopupActive())
     {
+        popupKind = POPUP_NONE;
         popupUntil = 0;
         fullRedraw = true;
+        dirty = true;
     } // if
 
-    // Header shows bus liveness, so refresh at least every second
-    static unsigned long lastHeaderAt = 0;
-    if (millis() - lastHeaderAt >= 1000UL)
+    // Header (bus liveness), clock and system page change with time: refresh at least every second
+    static unsigned long lastTickAt = 0;
+    if (millis() - lastTickAt >= 1000UL)
     {
-        lastHeaderAt = millis();
+        lastTickAt = millis();
         dirty = true;
     } // if
 

@@ -20,6 +20,8 @@ void ResetPacketPrevData();
 #ifdef USE_TFT_DISPLAY
 // Defined in Display.ino
 void DisplayOnJson(const char* json);
+void DisplaySetTimeZone(int offsetMinutes);
+void DisplaySetTime(uint32_t epochUtc);
 #endif // USE_TFT_DISPLAY
 
 // Defined in OriginalMfd.ino
@@ -529,6 +531,12 @@ void ProcessWebSocketClientMessage(const char* payload, uint32_t id)
   #else
     (void)id;
   #endif  // PREPEND_TIME_STAMP_TO_DEBUG_OUTPUT
+
+  #ifdef USE_TFT_DISPLAY
+    // The on-board TFT keeps its own clock from the browser's time zone and UTC time
+    if (clientMessage.startsWith("time_offset:")) DisplaySetTimeZone(clientMessage.substring(12).toInt());
+    if (clientMessage.startsWith("date_time:")) DisplaySetTime((uint32_t)(atoll(clientMessage.substring(10).c_str()) / 1000LL));
+  #endif // USE_TFT_DISPLAY
 
 } // ProcessWebSocketClientMessage
 
