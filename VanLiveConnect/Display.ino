@@ -1265,6 +1265,12 @@ static void HandleTouch()
     {
         demoMode = ! demoMode;
         if (demoMode) { DemoLoadValues(); demoStep = 0; }
+        else
+        {
+            // Demo off: forget the sample values, so the pages show only what the VAN bus delivers from now on
+            for (int i = 0; i < N_KEYS; i++) vals[i] = "";
+            SwitchPage(PG_CLOCK);
+        } // if
         popupKind = POPUP_NONE; popupUntil = 0;
         fullRedraw = true; dirty = true;
         return;
