@@ -1246,6 +1246,9 @@ static void DemoStep()
 // -----
 // Touch
 
+static volatile bool remoteTap = false;  // Tap received from the live view web page
+static int remoteTapX = 0, remoteTapY = 0;
+
 static void HandleTouch()
 {
     // Act once per touch: on the press edge only, with a short debounce
@@ -1253,6 +1256,12 @@ static void HandleTouch()
     bool pressed = TouchPressed();
     bool edge = pressed && ! wasPressed;
     wasPressed = pressed;
+    if (remoteTap)
+    {
+        remoteTap = false;
+        touchX = remoteTapX; touchY = remoteTapY;
+        edge = true;
+    } // if
     if (! edge) return;
     for (int i = 5; i > 0; i--) memcpy(touchHist[i], touchHist[i - 1], sizeof(touchHist[0]));
     touchHist[0][0] = touchRawX; touchHist[0][1] = touchRawY; touchHist[0][2] = touchX; touchHist[0][3] = touchY;
@@ -1486,6 +1495,102 @@ void DisplayRegisterDebugHttp(AsyncWebServer& server)
 #endif // DISPLAY_DEBUG_SERIAL
 
 // -----
+// Live view of the TFT in a browser: GET /tft.html shows the screen image (GET /tft.bmp, refreshed a few
+// times per second) and forwards taps on the image to the display (GET /tft.tap?x=..&y=..).
+
+static const char tftHtml[] PROGMEM = R"=====(<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TFT live view</title>
+<style>
+body{margin:0;background:#06101c;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:Arial,sans-serif;color:#8fa3bf}
+img{width:96vw;max-width:960px;image-rendering:pixelated;border:2px solid #05bfff;border-radius:10px;box-shadow:0 0 24px rgba(5,191,255,.35);cursor:pointer}
+p{font-size:14px;margin:12px 0 0}
+</style></head><body>
+<img id="i" src="/tft.bmp" alt="TFT">
+<p>Live view of the on-board display. Tap the image to tap the display.</p>
+<script>
+var i=document.getElementById('i');
+function r(){var n=new Image();n.onload=function(){i.src=n.src;setTimeout(r,400)};n.onerror=function(){setTimeout(r,1500)};n.src='/tft.bmp?t='+Date.now()}
+setTimeout(r,400);
+i.onclick=function(e){var b=i.getBoundingClientRect();var x=Math.round((e.clientX-b.left)/b.width*320),y=Math.round((e.clientY-b.top)/b.height*240);fetch('/tft.tap?x='+x+'&y='+y)};
+</script></body></html>
+)=====";
+
+#define BMP_HDR 54
+#define BMP_ROW (SCREEN_W * 3)
+#define BMP_TOTAL (BMP_HDR + BMP_ROW * SCREEN_H)
+
+static uint8_t bmpHeader[BMP_HDR];
+static volatile unsigned long bmpStreamingSince = 0;  // Non-zero while an image is being sent: redraws are paused
+
+static void PutLe32(uint8_t* p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
+static void PutLe16(uint8_t* p, uint16_t v) { p[0] = v; p[1] = v >> 8; }
+
+static void BuildBmpHeader()
+{
+    memset(bmpHeader, 0, BMP_HDR);
+    bmpHeader[0] = 'B'; bmpHeader[1] = 'M';
+    PutLe32(bmpHeader + 2, BMP_TOTAL);
+    PutLe32(bmpHeader + 10, BMP_HDR);
+    PutLe32(bmpHeader + 14, 40);                 // DIB header size
+    PutLe32(bmpHeader + 18, SCREEN_W);
+    PutLe32(bmpHeader + 22, (uint32_t)(-SCREEN_H)); // Negative height: rows top-down
+    PutLe16(bmpHeader + 26, 1);                  // Planes
+    PutLe16(bmpHeader + 28, 24);                 // Bits per pixel
+    PutLe32(bmpHeader + 34, BMP_ROW * SCREEN_H);
+    PutLe32(bmpHeader + 38, 2835);
+    PutLe32(bmpHeader + 42, 2835);
+} // BuildBmpHeader
+
+// Chunk generator: converts the sprite (RGB565, byte-swapped for SPI) to 24-bit BMP on the fly
+static size_t TftBmpChunk(uint8_t* out, size_t maxLen, size_t index)
+{
+    if (index >= BMP_TOTAL) { bmpStreamingSince = 0; return 0; }
+    if (index == 0) bmpStreamingSince = millis();
+    const uint8_t* px = (const uint8_t*)spr.getPointer();
+    size_t n = 0;
+    while (n < maxLen && index + n < BMP_TOTAL)
+    {
+        size_t pos = index + n;
+        if (pos < BMP_HDR) { out[n++] = bmpHeader[pos]; continue; }
+        size_t p = pos - BMP_HDR;
+        size_t pix = p / 3;
+        int comp = p % 3;
+        uint16_t v = ((uint16_t)px[pix * 2] << 8) | px[pix * 2 + 1];
+        uint8_t c = comp == 0 ? (v & 31) * 255 / 31 : comp == 1 ? ((v >> 5) & 63) * 255 / 63 : ((v >> 11) & 31) * 255 / 31;  // B, G, R
+        out[n++] = c;
+    } // while
+    return n;
+} // TftBmpChunk
+
+void DisplayRegisterHttp(AsyncWebServer& server)
+{
+    BuildBmpHeader();
+
+    server.on("/tft.html", HTTP_GET, [](AsyncWebServerRequest* request)
+    {
+        request->send(200, "text/html", tftHtml);
+    });
+    server.on("/tft.bmp", HTTP_GET, [](AsyncWebServerRequest* request)
+    {
+        if (! useSprite) { request->send(503, "text/plain", "no sprite buffer"); return; }
+        AsyncWebServerResponse* response = request->beginChunkedResponse("image/bmp", TftBmpChunk);
+        response->addHeader("Cache-Control", "no-store");
+        request->send(response);
+    });
+    server.on("/tft.tap", HTTP_GET, [](AsyncWebServerRequest* request)
+    {
+        if (request->hasParam("x") && request->hasParam("y"))
+        {
+            remoteTapX = constrain(request->getParam("x")->value().toInt(), 0, SCREEN_W - 1);
+            remoteTapY = constrain(request->getParam("y")->value().toInt(), 0, SCREEN_H - 1);
+            remoteTap = true;
+        } // if
+        request->send(200, "text/plain", "ok");
+    });
+} // DisplayRegisterHttp
+
+// -----
 // Public interface
 
 // Show a one-line status text at the bottom of the screen (used during start-up, before the first redraw)
@@ -1561,8 +1666,11 @@ void LoopDisplay()
 
     if (! dirty && ! fullRedraw) return;
     if ((long)(millis() - lastRedrawAt) < (long)REDRAW_INTERVAL_MS) return;
-    lastRedrawAt = millis();
 
+    // Hold the frame while the live view is reading it (with a safety timeout)
+    if (bmpStreamingSince != 0 && millis() - bmpStreamingSince < 3000UL) return;
+
+    lastRedrawAt = millis();
     Redraw();
 } // LoopDisplay
 

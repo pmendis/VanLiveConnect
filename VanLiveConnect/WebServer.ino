@@ -642,16 +642,22 @@ void ServeMainHtml(class AsyncWebServerRequest* request)
   #endif // SERVE_MAIN_FILES_FROM_FFS
 } // ServeMainHtml
 
-#if defined USE_TFT_DISPLAY && defined DISPLAY_DEBUG_SERIAL
+#ifdef USE_TFT_DISPLAY
 // Defined in Display.ino
+void DisplayRegisterHttp(AsyncWebServer& server);
+  #ifdef DISPLAY_DEBUG_SERIAL
 void DisplayRegisterDebugHttp(AsyncWebServer& server);
-#endif
+  #endif
+#endif // USE_TFT_DISPLAY
 
 void SetupWebServer()
 {
-  #if defined USE_TFT_DISPLAY && defined DISPLAY_DEBUG_SERIAL
+  #ifdef USE_TFT_DISPLAY
+    DisplayRegisterHttp(webServer);  // Live view of the TFT: /tft.html
+   #ifdef DISPLAY_DEBUG_SERIAL
     DisplayRegisterDebugHttp(webServer);
-  #endif
+   #endif
+  #endif // USE_TFT_DISPLAY
 
     // -----
     // Fonts
