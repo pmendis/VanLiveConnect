@@ -313,6 +313,7 @@ static int demoStep = 0;
 #define DEMO_BTN_X 44
 #define DEMO_BTN_W 60
 static void DemoLoadValues();
+static void DemoStep();
 #endif // DISPLAY_DEMO_BUTTON
 
 static void SwitchPage(int page)
@@ -1414,6 +1415,9 @@ static void ExecuteDebugCommand(String cmd)
         else if (k == "none") { popupKind = POPUP_NONE; popupUntil = 0; fullRedraw = true; dirty = true; }
         Serial.printf_P(PSTR("tft: popup %s\n"), k.c_str());
     }
+  #ifdef DISPLAY_DEMO_BUTTON
+    else if (cmd == "tft step") { if (! demoMode) { demoMode = true; DemoLoadValues(); demoStep = 0; } DemoStep(); Serial.printf_P(PSTR("tft: demo step %d, popup %d\n"), demoStep, (int)popupKind); }
+  #endif
     else if (cmd.startsWith("tft json "))
     {
         String j = "{\"event\":\"display\",\"data\":" + cmd.substring(9) + "}";
