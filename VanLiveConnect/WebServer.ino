@@ -642,8 +642,17 @@ void ServeMainHtml(class AsyncWebServerRequest* request)
   #endif // SERVE_MAIN_FILES_FROM_FFS
 } // ServeMainHtml
 
+#if defined USE_TFT_DISPLAY && defined DISPLAY_DEBUG_SERIAL
+// Defined in Display.ino
+void DisplayRegisterDebugHttp(AsyncWebServer& server);
+#endif
+
 void SetupWebServer()
 {
+  #if defined USE_TFT_DISPLAY && defined DISPLAY_DEBUG_SERIAL
+    DisplayRegisterDebugHttp(webServer);
+  #endif
+
     // -----
     // Fonts
 

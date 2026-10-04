@@ -12,6 +12,7 @@
 param(
     [string]$Port = "",
     [switch]$NoDisplay,
+    [switch]$DebugSerial,
     [switch]$VerboseBuild
 )
 
@@ -57,7 +58,7 @@ if (-not $NoDisplay) {
     $cliArgs += @(
         "--library", (Join-Path $lib "TFT_eSPI"),
         "--library", (Join-Path $lib "ArduinoJson"),
-        "--build-property", "compiler.cpp.extra_flags=$tftFlags"
+        "--build-property", "compiler.cpp.extra_flags=$tftFlags$(if ($DebugSerial) { ' -DDISPLAY_DEBUG_SERIAL' })"
     )
 }
 

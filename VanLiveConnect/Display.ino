@@ -442,6 +442,14 @@ static void Panel(int x, int y, int w, int h)
     gfx->drawSmoothRoundRect(x, y, 10, 8, w, h, COL_ACCENT, COL_PANEL);
 } // Panel
 
+// Value in font 4 followed by its unit in font 2
+static void ValueUnit(int x, int y, const char* value, const char* unit, uint16_t color = COL_FG)
+{
+    Text(x, y, value, 4, TL_DATUM, color);
+    int vw = gfx->textWidth(value, 4);
+    Text(x + vw + 5, y + 8, unit, 2, TL_DATUM, COL_DIM);
+} // ValueUnit
+
 // Label (small, accent) with a value (font 4) below it
 static void LabelValue(int x, int y, const char* label, const char* value, uint16_t color = COL_FG, int font = 4)
 {
@@ -572,10 +580,8 @@ static void DrawHeader()
         x += w + 11;
     } // for
 
-    // Bus liveness dot and exterior temperature on the right
-    gfx->fillSmoothCircle(SCREEN_W - 80, HEADER_H / 2, 5, busAlive ? COL_OK : COL_DIM, COL_PANEL);
-    String t = V(K_exterior_temp).length() > 0 ? V(K_exterior_temp) + " " + TempUnitStr() : "";
-    Text(SCREEN_W - 8, HEADER_H / 2, t.c_str(), 2, MR_DATUM, COL_ACCENT);
+    // Bus liveness dot on the right
+    gfx->fillSmoothCircle(SCREEN_W - 12, HEADER_H / 2, 5, busAlive ? COL_OK : COL_DIM, COL_PANEL);
 } // DrawHeader
 
 static void DrawFooter()
@@ -637,12 +643,12 @@ static void DrawInstruments()
     // Fuel: red below 13 %, green above
     static const TArcZone fuelZones[] = { { 13, COL_ZONE_RED }, { 100, COL_ZONE_GREEN } };
     int fuel = V(K_fuel_level).length() > 0 ? V(K_fuel_level).toInt() : -1;
-    ArcGauge(78, PANEL_Y + 64, 34, fuelZones, 2, fuel, OrDash(V(K_fuel_level), "--"), OrDash(V(K_fuel_level_unit), "%"), "FUEL");
+    ArcGauge(78, PANEL_Y + 58, 34, fuelZones, 2, fuel, OrDash(V(K_fuel_level), "--"), OrDash(V(K_fuel_level_unit), "%"), "FUEL");
 
     // Coolant: 50..130 degrees C; blue below 70, green to 110, red above
     static const TArcZone coolZones[] = { { 25, COL_ZONE_BLUE }, { 75, COL_ZONE_GREEN }, { 100, COL_ZONE_RED } };
     int coolPct = V(K_coolant_temp).length() > 0 ? (V(K_coolant_temp).toInt() - 50) * 100 / 80 : -1;
-    ArcGauge(242, PANEL_Y + 64, 34, coolZones, 3, coolPct, OrDash(V(K_coolant_temp), "--"), TempUnitStr(), "COOLANT");
+    ArcGauge(242, PANEL_Y + 58, 34, coolZones, 3, coolPct, OrDash(V(K_coolant_temp), "--"), TempUnitStr(), "COOLANT");
 
     // Gear between the gauges
     String gear = V(K_in_reverse) == "YES" ? "R" : OrDash(V(K_chosen_gear), "-");
@@ -650,7 +656,7 @@ static void DrawInstruments()
     Text(SCREEN_W / 2, PANEL_Y + 34, gear.c_str(), 4, TC_DATUM, COL_FG);
 
     // Speed and engine speed
-    int y = PANEL_Y + 96;
+    int y = PANEL_Y + 90;
     Text(14, y, OrDash(V(K_vehicle_speed), "--"), 6, TL_DATUM, COL_FG);
     int sw = gfx->textWidth(OrDash(V(K_vehicle_speed), "--"), 6);
     Text(14 + sw + 6, y + 28, SpeedUnitStr(), 2, TL_DATUM, COL_DIM);
@@ -658,7 +664,7 @@ static void DrawInstruments()
     Text(SCREEN_W - 40, y + 28, "rpm", 2, TL_DATUM, COL_DIM);
 
     // Odometer, power, torque
-    y = PANEL_Y + 146;
+    y = PANEL_Y + 140;
     String odo = V(K_odometer_1).length() > 0 ? V(K_odometer_1) + " " + DistanceUnitStr() : "--";
     Text(14, y, odo.c_str(), 2, TL_DATUM, COL_FG);
     String pwr = V(K_delivered_power).length() > 0 ? V(K_delivered_power) + " HP" : "";
@@ -666,7 +672,7 @@ static void DrawInstruments()
     Text(SCREEN_W - 14, y, (pwr + (pwr.length() && trq.length() ? "   " : "") + trq).c_str(), 2, TR_DATUM, COL_FG);
 
     // Lights and door chips
-    int cy = PANEL_BOTTOM - 24;
+    int cy = PANEL_BOTTOM - 22;
     const String& l = V(K_lights);
     Chip(14, cy, 54, "DOOR", On(K_door_open), COL_WARN);
     Chip(74, cy, 54, "LOW", l.indexOf("DIPPED_BEAM") >= 0, COL_OK);
@@ -757,11 +763,11 @@ static void DrawAudio()
         if (V(K_tuner_memory).length() > 0 && V(K_tuner_memory) != "-") band += "  P" + V(K_tuner_memory);
         Text(SCREEN_W - 14, PANEL_Y + 16, band.c_str(), 2, TR_DATUM, COL_DIM);
 
-        String freq = V(K_frequency);
-        if (V(K_frequency_h).length() > 0 && V(K_frequency_h) != "-") freq += V(K_frequency_h);
-        Text(82, PANEL_Y + 38, OrDash(freq, "---.-"), 6, TL_DATUM, COL_FG);
-        int fw = gfx->textWidth(OrDash(freq, "---.-"), 6);
-        Text(82 + fw + 8, PANEL_Y + 66, OrDash(V(K_frequency_unit), ""), 2, TL_DATUM, COL_DIM);
+        const char* freq = OrDash(V(K_frequency), "---.-");
+        Text(82, PANEL_Y + 38, freq, 6, TL_DATUM, COL_FG);
+        int fw = gfx->textWidth(freq, 6);
+        if (V(K_frequency_h).length() > 0 && V(K_frequency_h) != "-") Text(82 + fw + 2, PANEL_Y + 40, V(K_frequency_h).c_str(), 4, TL_DATUM, COL_FG);
+        Text(82 + fw + 24, PANEL_Y + 68, OrDash(V(K_frequency_unit), ""), 2, TL_DATUM, COL_DIM);
 
         Text(14, PANEL_Y + 88, OrDash(V(K_rds_text), ""), 4, TL_DATUM, COL_FG);
 
@@ -840,12 +846,12 @@ static void DrawTripValues(int x, int y, int tab)
     const String& spd = tab == 2 ? V(K_avg_speed_2) : V(K_avg_speed_1);
     const String& dist = tab == 2 ? V(K_distance_2) : V(K_distance_1);
 
-    String c = OrDash(cons, "--.-"); c += " " + String(OrDash(V(K_fuel_consumption_unit), "l/100 km"));
-    String s = OrDash(spd, "--"); s += " " + String(SpeedUnitStr());
-    String d = OrDash(dist, "--"); d += " " + String(DistanceUnitStr());
-    LabelValue(x, y, "Average consumption", c.c_str());
-    LabelValue(x, y + 46, "Average speed", s.c_str());
-    LabelValue(x, y + 92, "Distance", d.c_str());
+    Text(x, y, "Average consumption", 2, TL_DATUM, COL_ACCENT);
+    ValueUnit(x, y + 17, OrDash(cons, "--.-"), OrDash(V(K_fuel_consumption_unit), "l/100 km"));
+    Text(x, y + 46, "Average speed", 2, TL_DATUM, COL_ACCENT);
+    ValueUnit(x, y + 63, OrDash(spd, "--"), SpeedUnitStr());
+    Text(x, y + 92, "Distance", 2, TL_DATUM, COL_ACCENT);
+    ValueUnit(x, y + 109, OrDash(dist, "--"), DistanceUnitStr());
 } // DrawTripValues
 
 static void DrawTrip()
@@ -860,10 +866,10 @@ static void DrawTrip()
     DrawTripValues(14, PANEL_Y + 38, tripTab);
 
     // Instant consumption and range on the right
-    String ic = OrDash(V(K_inst_consumption), "--.-"); ic += " " + String(OrDash(V(K_fuel_consumption_unit), "l/100 km"));
-    String dte = OrDash(V(K_distance_to_empty), "---"); dte += " " + String(DistanceUnitStr());
-    LabelValue(186, PANEL_Y + 38, "Instant", ic.c_str());
-    LabelValue(186, PANEL_Y + 84, "Range", dte.c_str());
+    Text(186, PANEL_Y + 38, "Instant", 2, TL_DATUM, COL_ACCENT);
+    ValueUnit(186, PANEL_Y + 55, OrDash(V(K_inst_consumption), "--.-"), OrDash(V(K_fuel_consumption_unit), "l/100 km"));
+    Text(186, PANEL_Y + 84, "Range", 2, TL_DATUM, COL_ACCENT);
+    ValueUnit(186, PANEL_Y + 101, OrDash(V(K_distance_to_empty), "---"), DistanceUnitStr());
     String odo = V(K_odometer_1).length() > 0 ? V(K_odometer_1) + " " + DistanceUnitStr() : "--";
     LabelValue(186, PANEL_Y + 130, "Odometer", odo.c_str(), COL_FG, 2);
 } // DrawTrip
@@ -981,12 +987,12 @@ static void DrawSystem()
 // -----
 // Popups
 
-static void PopupCard(int& x, int& y, int& w, int& h, uint16_t border)
+static void PopupCard(int& x, int& y, int& w, int& h, uint16_t border, bool hint = true)
 {
     x = 18; y = 52; w = SCREEN_W - 36; h = 126;
     gfx->fillSmoothRoundRect(x, y, w, h, 12, COL_PANEL, COL_BG);
     gfx->drawSmoothRoundRect(x, y, 12, 10, w, h, border, COL_PANEL);
-    Text(x + w / 2, y + h - 6, "tap to dismiss", 2, BC_DATUM, COL_DIM);
+    if (hint) Text(x + w / 2, y + h - 6, "tap to dismiss", 2, BC_DATUM, COL_DIM);
 } // PopupCard
 
 static void WarningTriangle(int tx, int ty, uint16_t color)
@@ -1030,29 +1036,29 @@ static void DrawDoorPopup()
 static void DrawAudioPopup()
 {
     int x, y, w, h;
-    PopupCard(x, y, w, h, COL_ACCENT);
+    PopupCard(x, y, w, h, COL_ACCENT, false);
 
     Text(x + 12, y + 10, "Audio settings", 2, TL_DATUM, COL_ACCENT);
     Text(x + w - 12, y + 10, OrDash(V(K_audio_source), ""), 2, TR_DATUM, COL_DIM);
 
     int vol = V(K_volume).length() > 0 ? V(K_volume).toInt() : 0;
-    Text(x + 12, y + 30, "Volume", 2, TL_DATUM, COL_DIM);
-    Text(x + w - 12, y + 26, OrDash(V(K_volume), "--"), 4, TR_DATUM, COL_FG);
-    Slider(x + 74, y + 36, w - 74 - 60, vol * 100 / 30);
+    Text(x + 12, y + 28, "Volume", 2, TL_DATUM, COL_DIM);
+    Text(x + w - 12, y + 24, OrDash(V(K_volume), "--"), 4, TR_DATUM, COL_FG);
+    Slider(x + 74, y + 34, w - 74 - 60, vol * 100 / 30);
 
     struct { const char* label; TDisplayKey key; } rows[4] = { { "Bass", K_bass }, { "Treble", K_treble }, { "Fader", K_fader }, { "Balance", K_balance } };
     for (int i = 0; i < 4; i++)
     {
         int rx = x + 12 + (i % 2) * (w / 2);
-        int ry = y + 56 + (i / 2) * 26;
+        int ry = y + 50 + (i / 2) * 22;
         int v = V(rows[i].key).length() > 0 ? V(rows[i].key).toInt() : 0;
         Text(rx, ry + 2, rows[i].label, 2, TL_DATUM, COL_DIM);
         Slider(rx + 56, ry + 6, w / 2 - 56 - 44, (v + 9) * 100 / 18);
         Text(rx + w / 2 - 16, ry + 2, OrDash(V(rows[i].key), "-"), 2, TR_DATUM, COL_FG);
     } // for
 
-    Chip(x + 12, y + h - 30, 52, "LOUD", On(K_loudness));
-    Chip(x + 70, y + h - 30, 80, "AUTO-VOL", On(K_auto_volume));
+    Chip(x + 12, y + h - 28, 52, "LOUD", On(K_loudness));
+    Chip(x + 70, y + h - 28, 80, "AUTO-VOL", On(K_auto_volume));
 } // DrawAudioPopup
 
 static void DrawTripPopup()
@@ -1145,6 +1151,171 @@ static void HandleTouch()
 } // HandleTouch
 
 // -----
+// Serial debug commands (compiled only with -DDISPLAY_DEBUG_SERIAL; for checking the screen design off-device)
+//
+//   tft              dump the current screen image as hex RGB565 between "TFTSHOT 320 240 BEGIN" / "TFTSHOT END"
+//   tft page <n>     switch to page n (0..7)
+//   tft demo         load a set of sample values for all pages
+//   tft popup <k>    show popup k: notification | door | audio | trip
+//   tft json {...}   feed a JSON "data" object, as if received from the VAN bus
+
+#ifdef DISPLAY_DEBUG_SERIAL
+
+static const char demoJson[] PROGMEM =
+    "{\"event\":\"display\",\"data\":{"
+    "\"vehicle_speed\":\"87\",\"engine_rpm\":\"2450\",\"coolant_temp\":\"89\",\"exterior_temp\":\"28.0\","
+    "\"fuel_level\":\"62\",\"fuel_level_unit\":\"lt\",\"odometer_1\":\"163,429\",\"contact_key_position\":\"ON\","
+    "\"engine_running\":\"YES\",\"dash_light\":\"ON\",\"hazard_lights\":\"OFF\",\"diesel_glow_plugs\":\"OFF\","
+    "\"door_open\":\"NO\",\"doors_locked\":\"YES\",\"door_front_left\":\"OPEN\",\"lights\":\"DIPPED_BEAM INDICATOR_LEFT \","
+    "\"chosen_gear\":\"4\",\"delivered_power\":\"74\",\"delivered_torque\":\"162\",\"in_reverse\":\"NO\","
+    "\"oil_level_raw\":\"7\",\"distance_to_service\":\"12400\",\"dashboard_programmed_brightness\":\"12\","
+    "\"vin\":\"VF38BRHZE81234567\",\"inst_consumption\":\"6.8\",\"distance_to_empty\":\"380\","
+    "\"avg_consumption_1\":\"7.4\",\"avg_speed_1\":\"58\",\"distance_1\":\"412\","
+    "\"avg_consumption_2\":\"8.1\",\"avg_speed_2\":\"64\",\"distance_2\":\"2370\",\"fuel_consumption_unit\":\"l/100 km\","
+    "\"speed_unit\":\"km/h\",\"distance_unit\":\"km\","
+    "\"audio_source\":\"TUNER\",\"head_unit_power\":\"ON\",\"tuner_band\":\"FM1\",\"tuner_memory\":\"3\","
+    "\"frequency\":\"96.8\",\"frequency_h\":\"0\",\"frequency_unit\":\"MHz\",\"rds_text\":\"YES FM\",\"pty_16\":\"Pop Music\","
+    "\"pi_country\":\"NL\",\"signal_strength\":\"12\",\"ta_selected\":\"ON\",\"ta_not_available\":\"OFF\",\"rds_selected\":\"ON\","
+    "\"rds_not_available\":\"OFF\",\"regional\":\"ON\",\"info_traffic\":\"OFF\",\"ext_mute\":\"OFF\",\"mute\":\"OFF\","
+    "\"loudness\":\"ON\",\"search_mode\":\"NONE\",\"volume\":\"18\",\"bass\":\"+3\",\"treble\":\"-2\",\"fader\":\"+1\","
+    "\"balance\":\"0\",\"auto_volume\":\"OFF\","
+    "\"cd_status\":\"PLAY\",\"cd_current_track\":\"7\",\"cd_total_tracks\":\"12\",\"cd_track_time\":\"03:42\",\"cd_total_time\":\"58:10\","
+    "\"cd_changer_status\":\"PLAY\",\"cd_changer_current_disc\":\"3\",\"cd_changer_current_track\":\"5\","
+    "\"cd_changer_total_tracks\":\"14\",\"cd_changer_track_time\":\"02:17\",\"cd_changer_disc_1_present\":\"ON\","
+    "\"cd_changer_disc_2_present\":\"ON\",\"cd_changer_disc_3_present\":\"ON\",\"cd_changer_disc_4_present\":\"OFF\","
+    "\"cd_changer_disc_5_present\":\"ON\",\"cd_changer_disc_6_present\":\"OFF\","
+    "\"satnav_curr_street\":\"Rue de la Paix (Paris)\",\"satnav_gps_fix\":\"ON\",\"satnav_gps_speed\":\"86 km/h\","
+    "\"satnav_curr_heading\":\"215\",\"satnav_heading_to_dest\":\"40\",\"satnav_distance_to_dest_via_road\":\"12.4 km\","
+    "\"satnav_turn_at\":\"350 m\",\"satnav_minutes_to_travel\":\"17\",\"satnav_guidance_status\":\"IN_GUIDANCE_MODE \","
+    "\"ac_enabled\":\"YES\",\"ac_compressor\":\"ON\",\"recirc\":\"OFF\",\"rear_heater_1\":\"OFF\",\"reported_fan_speed\":\"4\","
+    "\"set_fan_speed\":\"4\",\"condenser_pressure_bar\":\"11.2\",\"evaporator_temp\":\"4.5\","
+    "\"esp_free_ram\":\"214560 bytes\",\"esp_wifi_rssi\":\"-52 dB\""
+    "}}";
+
+static void DisplayDumpScreen()
+{
+    if (! useSprite) { Serial.print(F("TFTSHOT no sprite buffer\n")); return; }
+    const uint16_t* px = (const uint16_t*)spr.getPointer();
+    Serial.printf_P(PSTR("TFTSHOT %d %d BEGIN\n"), SCREEN_W, SCREEN_H);
+    static const char hex[] = "0123456789ABCDEF";
+    char line[SCREEN_W * 4 + 2];
+    for (int y = 0; y < SCREEN_H; y++)
+    {
+        char* o = line;
+        for (int x = 0; x < SCREEN_W; x++)
+        {
+            uint16_t v = px[y * SCREEN_W + x];
+            *o++ = hex[(v >> 12) & 15]; *o++ = hex[(v >> 8) & 15]; *o++ = hex[(v >> 4) & 15]; *o++ = hex[v & 15];
+        } // for
+        *o++ = '\n'; *o = 0;
+        Serial.write((const uint8_t*)line, SCREEN_W * 4 + 1);
+        Serial.flush();
+    } // for
+    Serial.print(F("TFTSHOT END\n"));
+} // DisplayDumpScreen
+
+// Snapshot of the sprite, taken in the loop task and served over HTTP (see DisplayRegisterDebugHttp)
+static uint8_t* snapshot = 0;
+static volatile bool snapshotReady = false;
+static String pendingHttpCmd;  // Command received over HTTP, executed in the loop task
+
+static void ExecuteDebugCommand(String cmd)
+{
+    cmd.trim();
+    if (cmd == "tft")
+    {
+        Redraw();
+        DisplayDumpScreen();
+    }
+    else if (cmd == "tft shot")
+    {
+        // Snapshot for HTTP
+        Redraw();
+        if (useSprite)
+        {
+            if (snapshot == 0) snapshot = (uint8_t*)ps_malloc(SCREEN_W * SCREEN_H * 2);
+            if (snapshot) { memcpy(snapshot, spr.getPointer(), SCREEN_W * SCREEN_H * 2); snapshotReady = true; }
+        } // if
+        Serial.print(F("tft: snapshot taken\n"));
+    }
+    else if (cmd.startsWith("tft page "))
+    {
+        int n = cmd.substring(9).toInt();
+        if (n >= 0 && n < N_PAGES) { popupKind = POPUP_NONE; SwitchPage(n); Serial.printf_P(PSTR("tft: page %d\n"), n); }
+    }
+    else if (cmd == "tft demo")
+    {
+        char* buf = (char*)malloc(sizeof(demoJson));
+        if (buf) { strcpy_P(buf, demoJson); DisplayOnJson(buf); free(buf); }
+        popupKind = POPUP_NONE;
+        Serial.print(F("tft: demo values loaded\n"));
+    }
+    else if (cmd.startsWith("tft popup "))
+    {
+        String k = cmd.substring(10);
+        if (k == "notification") { vals[K_notification_message_on_mfd] = "Fuel level low!"; ShowPopup(POPUP_NOTIFICATION, 60000); }
+        else if (k == "info") { vals[K_notification_message_on_mfd] = "Automatic headlamp lighting activated"; ShowPopup(POPUP_NOTIFICATION, 60000); }
+        else if (k == "door") { vals[K_door_open] = "YES"; ShowPopup(POPUP_DOOR, 60000); }
+        else if (k == "audio") ShowPopup(POPUP_AUDIO, 60000);
+        else if (k == "trip") { popupTripTab = "TR1"; ShowPopup(POPUP_TRIP, 60000); }
+        else if (k == "none") { popupKind = POPUP_NONE; popupUntil = 0; fullRedraw = true; dirty = true; }
+        Serial.printf_P(PSTR("tft: popup %s\n"), k.c_str());
+    }
+    else if (cmd.startsWith("tft json "))
+    {
+        String j = "{\"event\":\"display\",\"data\":" + cmd.substring(9) + "}";
+        DisplayOnJson(j.c_str());
+        Serial.print(F("tft: json applied\n"));
+    } // if
+} // ExecuteDebugCommand
+
+static void DisplayHandleSerial()
+{
+    static String cmd;
+    while (Serial.available() > 0)
+    {
+        char c = (char)Serial.read();
+        if (c == '\r') continue;
+        if (c != '\n') { if (cmd.length() < 3000) cmd += c; continue; }
+        ExecuteDebugCommand(cmd);
+        cmd = "";
+    } // while
+
+    if (pendingHttpCmd.length() > 0)
+    {
+        String c = pendingHttpCmd;
+        pendingHttpCmd = "";
+        ExecuteDebugCommand(c);
+    } // if
+} // DisplayHandleSerial
+
+// HTTP variant of the debug commands, for when the USB console is not reachable:
+//   GET /tft?cmd=<command>   queue a command (same syntax as above; "tft shot" takes a snapshot)
+//   GET /tft.raw             the last snapshot, 320 x 240 x 16-bit RGB565, big-endian... no: native (little-endian) order
+void DisplayRegisterDebugHttp(AsyncWebServer& server)
+{
+    server.on("/tft", HTTP_GET, [](AsyncWebServerRequest* request)
+    {
+        if (request->hasParam("cmd"))
+        {
+            pendingHttpCmd = request->getParam("cmd")->value();
+            if (pendingHttpCmd == "tft") pendingHttpCmd = "tft shot";
+            snapshotReady = false;
+            request->send(200, "text/plain", "queued: " + pendingHttpCmd);
+            return;
+        } // if
+        request->send(200, "text/plain", "usage: /tft?cmd=<tft command>, then /tft.raw");
+    });
+    server.on("/tft.raw", HTTP_GET, [](AsyncWebServerRequest* request)
+    {
+        if (snapshot == 0 || ! snapshotReady) { request->send(503, "text/plain", "no snapshot"); return; }
+        request->send(200, "application/octet-stream", snapshot, SCREEN_W * SCREEN_H * 2);
+    });
+} // DisplayRegisterDebugHttp
+
+#endif // DISPLAY_DEBUG_SERIAL
+
+// -----
 // Public interface
 
 // Show a one-line status text at the bottom of the screen (used during start-up, before the first redraw)
@@ -1195,6 +1366,10 @@ void SetupDisplay()
 
 void LoopDisplay()
 {
+  #ifdef DISPLAY_DEBUG_SERIAL
+    DisplayHandleSerial();
+  #endif // DISPLAY_DEBUG_SERIAL
+
     HandleTouch();
 
     // Popup expired?
