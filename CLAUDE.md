@@ -61,7 +61,11 @@ unit, so functions are declared across files via forward declarations at the top
 | `MFD.html.ino`, `MFD.js.ino`, `CarInfo.css.ino`, `fa-all.css.ino`, `*.woff.ino`, `jquery-3.5.1.min.js.ino` | Web UI embedded as `PROGMEM` raw string literals. `MFD.js.ino` (~7200 lines) holds all display logic. |
 | `data/` | Gzipped copies of the same web assets for SPIFFS/LittleFS serving. |
 
-`extras/` has schematics, screenshots, Android setup images, and IDE helper scripts. `README.md` is extensive
+| `Display.ino` | Optional on-board 2.8" ILI9341 TFT + XPT2046 touch (ESP32-S3). Compiled only with `-DUSE_TFT_DISPLAY`. Taps the JSON stream via `DisplayOnJson()` called from `SendJsonOnWebSocket()`; keys listed in the `DISPLAY_KEYS` X-macro. Eight tap-cycled pages (clock, instruments, pre-flight, head unit, trip, sat nav, climate, system) that also follow the original MFD via the `large_screen` key; popups for notifications, door open, audio settings and trip computer. Touch is bit-banged; drawing goes through a PSRAM sprite. Has its own clock fed from the browser's `date_time:` / `time_offset:` WebSocket messages (no TimeLib). Live view in any browser on the board's network: `/tft.html` (image `/tft.bmp` streamed from the sprite as 24-bit BMP, taps forwarded via `/tft.tap?x=&y=`). Debug build (`-DebugSerial`): `/tft?cmd=...`, `/tft.raw`, `/tft.touch`. Touch is calibrated from real taps (see `TouchMap`). Pins and TFT_eSPI defines: `Config.h` "TFT display" section and `extras/Scripts/flash_s3_display.ps1`. Branches: v1 `feature/s3-display`, v2/v3 `feature/s3-display-v2`. TEMPORARY: `DISPLAY_DEMO_BUTTON` blocks (footer DEMO button) are to be removed on the user's request. |
+
+`extras/` has schematics, screenshots, Android setup images, and IDE helper scripts.
+`extras/Scripts/flash_s3_display.ps1` builds/uploads the ESP32-S3 display variant (TFT_eSPI is configured
+through compiler defines, so this script is the single source of truth for the TFT pins). `README.md` is extensive
 and is the primary user documentation.
 
 ## Data flow
@@ -92,3 +96,18 @@ ID, and (if behaviour is needed) `MFD.js.ino` handles it in `handleItemChange`.
   understanding the original behaviour described in comments and `CHANGES.txt`.
 - Version lives in `VanLiveConnectVersion.h` and `CHANGES.txt`; bump both together.
 - Only tested on one vehicle (2003 Peugeot 406, type C MFD). Packet layouts for other models may differ.
+
+## Web redesign branch (`feature/web-redesign`)
+
+Visual restyle of the browser MFD in a modern head-unit look. Rules kept: every element id/gid, screen,
+popup and script function of the original is unchanged; only layout, colours and decoration differ.
+- Header bar (0..70 px) replaces the old bottom status strip; both panels moved down to top:70. Header tabs
+  are decorative and follow `body[data-screen]`, which `changeLargeScreenTo()` now sets.
+- Fuel and coolant are arc gauges: the `.gauge` element still receives the ESP's `scaleX(n)` transform,
+  `processJsonObject()` mirrors it into CSS variable `--pct`, and CSS overrides the transform.
+- Numeric text values are mirrored into `--val` (used by the audio-settings slider styling).
+- Palette entries in `setColorTheme()` gained `--panel-fill` / `--panel-fill-2`; all new CSS derives from the
+  palette variables so the blue/orange/gold and light/dark themes keep working.
+- The bundled Font Awesome woff is a subset: only icons already used by the original page render.
+- Preview without hardware: extract the raw strings from the `.ino` files to a folder, serve it statically and
+  inject data in the console with `writeToDom({...})`.

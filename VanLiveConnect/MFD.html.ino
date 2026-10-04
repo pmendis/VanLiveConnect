@@ -30,12 +30,12 @@ const char mfd_html[] PROGMEM = R"=====(
 		<link rel="stylesheet" href="css/all.css" async />	<!-- Font Awesome -->
 	</head>
 
-	<body id="body" translate="no" onload="htmlBodyOnLoad();" onresize="resizeScreenToFit();">
+	<body id="body" translate="no" data-screen="clock" onload="htmlBodyOnLoad();" onresize="resizeScreenToFit();">
 
 
 		<!-- "Small" information panel -->
 
-		<div id="small_panel" style="position:absolute; left:0px; top:0px; width:390px; height:550px;">
+		<div id="small_panel" style="position:absolute; left:0px; top:70px; width:390px; height:550px;">
 
 			<!-- Trip info -->
 
@@ -177,7 +177,7 @@ const char mfd_html[] PROGMEM = R"=====(
 
 		<!-- "Large" information panel -->
 
-		<div id="large_panel" style="position:absolute; left:390px; top:0px; width:960px; height:550px;">
+		<div id="large_panel" style="position:absolute; left:390px; top:70px; width:960px; height:550px;">
 
 			<!-- Large clock (nothing better to show) -->
 
@@ -239,6 +239,9 @@ const char mfd_html[] PROGMEM = R"=====(
 
 				<div id="tuner" style="display:none;">
 
+					<!-- Decorative station tile -->
+					<div class="stationTile" style="left:30px; top:150px;"><span class="fas fa-volume-up"></span></div>
+
 					<div gid="tuner_memory" class="dseg7" style="font-size:80px; left:40px; top:40px;">-</div>
 
 					<div id="fm_band" class="led ledOn" style="left:110px; top:35px; width:80px;">FM</div>
@@ -255,9 +258,9 @@ const char mfd_html[] PROGMEM = R"=====(
 					</div>
 
 					<div gid="frequency_data_large" style="display:none;">
-						<div gid="frequency" class="dseg14" style="font-size:120px; left:10px; top:150px; width:400px; text-align:right;">---.-</div>
-						<div gid="frequency_h" class="dseg14" style="font-size:120px; left:410px; top:150px; width:90px; text-align:left;">-</div>
-						<div gid="frequency_unit" class="dseg14" style="font-size:120px; left:540px; top:150px; width:280px; text-align:right;">MHz</div>
+						<div gid="frequency" class="dseg14" style="font-size:110px; left:230px; top:150px; width:370px; text-align:left;">---.-</div>
+						<div gid="frequency_h" class="dseg14" style="font-size:110px; left:600px; top:150px; width:90px; text-align:left;">-</div>
+						<div gid="frequency_unit" class="dseg14" style="font-size:60px; left:700px; top:190px; width:240px; text-align:left;">MHz</div>
 					</div>
 
 					<!-- Icons involved in station searching -->
@@ -268,16 +271,16 @@ const char mfd_html[] PROGMEM = R"=====(
 					<div gid="search_direction_down" class="led ledOff fas fa-caret-down" style="left:780px; top:290px; width:40px; height:37px;"></div>
 
 					<div gid="fm_tuner_data" style="display:block;">
-						<div id="rds_text" gid="rds_text" class="dseg14" style="font-size:120px; left:10px; top:150px; width:815px; text-align:right;"></div>
+						<div id="rds_text" gid="rds_text" class="dseg14" style="font-size:96px; left:230px; top:150px; width:700px; text-align:left;"></div>
 
-						<div class="tag" style="left:20px; top:368px; width:150px;">PTY</div>
-						<div id="pty_standby_mode" class="led ledOn" style="display:none; font-size:53px; left:20px; top:360px; width:150px; height: 55px;">PTY</div>
-						<div id="pty_selection_menu" class="led ledOn" style="display:none; font-size:53px; left:20px; top:360px; width:150px; height: 55px;">SEL</div>
-						<div id="pty_16" class="dots" style="left:190px; top:353px; width:750px;"></div>
-						<div id="selected_pty_16" class="dots" style="display:none; left:190px; top:357px; width:750px;"></div>
+						<div class="tag ptyTag" style="left:230px; top:338px; width:80px; text-align:left;">PTY</div>
+						<div id="pty_standby_mode" class="led ledOn" style="display:none; font-size:40px; left:230px; top:330px; width:110px; height: 50px;">PTY</div>
+						<div id="pty_selection_menu" class="led ledOn" style="display:none; font-size:40px; left:230px; top:330px; width:110px; height: 50px;">SEL</div>
+						<div id="pty_16" class="dots" style="left:350px; top:323px; width:420px; text-align:left;"></div>
+						<div id="selected_pty_16" class="dots" style="display:none; left:350px; top:327px; width:420px; text-align:left;"></div>
 
-						<div class="tag" style="left:20px; top:428px; width:150px;">PI</div>
-						<div gid="pi_country" class="dots" style="left:190px; top:413px; width:150px;">--</div>
+						<div class="tag ptyTag" style="left:230px; top:398px; width:80px; text-align:left;">PI</div>
+						<div gid="pi_country" class="dots" style="left:350px; top:383px; width:150px; text-align:left;">--</div>
 
 						<div id="regional" class="led ledOn" style="left:510px; top:490px; width:140px;">REG</div>
 						<div gid="rds_selected" class="led ledOff" style="left:795px; top:490px; width:140px;">RDS</div>
@@ -435,63 +438,27 @@ const char mfd_html[] PROGMEM = R"=====(
 			<!-- Vehicle data -->
 			<div style="display:none;">
 
-				<!-- Fuel level, both as number and as linear gauge -->
+				<!-- Fuel level, both as number and as arc gauge -->
 
-				<div class="icon iconMedium fas fa-gas-pump" style="left:20px; top:55px;"></div>
-
-				<div gid="fuel_level" class="dseg7" style="font-size:55px; left:80px; top:65px; width:240px;">--.-</div>
-				<div gid="fuel_level_unit" class="tag" style="text-align:left; left:330px; top:80px; width:140px;">lt</div>
-
-				<div style="position:absolute; left:20px; top:130px; width:350px; height:60px;">
-					<div style="position:absolute; left:8px; width:332px; height:60px;">
-						<svg style="width:334px;">
-							<line style="stroke:#c40000; stroke-width:24;" x1="0" y1="20" x2="44" y2="20"></line> <!-- 10 litres -->
-							<line style="stroke:#066a0c; stroke-width:24;" x1="45" y1="20" x2="333" y2="20"></line>
-						</svg>
-					</div>
-					<div gid="fuel_level_perc" class="gauge">
-						<svg style="width:324px;">
-							<line style="stroke:#dfe7f2; stroke:var(--main-color); stroke-width:14; stroke-opacity:0.8;" x1="0" y1="20" x2="324" y2="20"></line>
-						</svg>
-					</div>
-					<div class="gaugeBoxDiv">
-						<svg style="width:348px;">
-							<rect x="5" y="5" width="340" height="30" class="gaugeBox"></rect>
-							<line style="stroke-width:5;" x1="170" y1="8" x2="170" y2="32"></line>
-							<line style="stroke-width:5;" x1="85" y1="8" x2="85" y2="32"></line>
-							<line style="stroke-width:5;" x1="255" y1="8" x2="255" y2="32"></line>
-						</svg>
-					</div>
+				<div class="arcGauge" style="left:60px; top:28px;">
+					<div class="arcZones" style="background:conic-gradient(from 270deg, #c40000 0deg 24deg, #066a0c 24deg 180deg, transparent 180deg);"></div>
+					<div gid="fuel_level_perc" class="gauge arcFill"></div>
+					<div class="gaugeBoxDiv arcTicks" style="background:conic-gradient(from 270deg, transparent 0deg 44deg, var(--main-color) 44deg 46deg, transparent 46deg 89deg, var(--main-color) 89deg 91deg, transparent 91deg 134deg, var(--main-color) 134deg 136deg, transparent 136deg);"></div>
+					<div class="icon iconMedium fas fa-gas-pump arcIcon"></div>
 				</div>
+				<div gid="fuel_level" class="dseg7 arcValue" style="font-size:55px; left:60px; top:118px; width:170px;">--.-</div>
+				<div gid="fuel_level_unit" class="tag arcUnit" style="text-align:left; left:238px; top:134px; width:80px;">lt</div>
 
-				<!-- Engine coolant temperature, both as number (in degrees) and as linear gauge -->
+				<!-- Engine coolant temperature, both as number (in degrees) and as arc gauge -->
 
-				<div class="icon iconMedium fas fa-thermometer-half" style="left:580px; top:55px;"></div>
-
-				<div gid="coolant_temp" class="dseg7" style="font-size:55px; left:630px; top:65px; width:240px;">--.-</div>
-				<div gid="coolant_temp_unit" class="tag" style="text-align:left; left:890px; top:80px; width:60px;">&deg;C</div>
-
-				<div style="position:absolute; left:590px; top:130px; width:350px; height:60px;">
-					<div class="gaugeInnerBoxDiv">
-						<svg style="width:334px;">
-							<line style="stroke:#00588c; stroke-width:24;" x1="0" y1="20" x2="176" y2="20"></line>
-							<line style="stroke:#066a0c; stroke-width:24;" x1="177" y1="20" x2="277" y2="20"></line>
-							<line style="stroke:#c40000; stroke-width:24;" x1="278" y1="20" x2="333" y2="20"></line>
-						</svg>
-					</div>
-					<div id="coolant_temp_perc" class="gauge">
-						<svg style="width:324px;">
-							<line style="stroke:#dfe7f2; stroke:var(--main-color); stroke-width:14; stroke-opacity:0.8;" x1="0" y1="20" x2="324" y2="20"></line>
-						</svg>
-					</div>
-					<div class="gaugeBoxDiv">
-						<svg style="width:348px;">
-							<rect x="5" y="5" width="340" height="30" class="gaugeBox"></rect>
-							<line style="stroke:#dfe7f2; stroke:var(--main-color); stroke-width:5;" x1="184" y1="8" x2="184" y2="32"></line> <!-- 70 degrees -->
-							<line style="stroke:#dfe7f2; stroke:var(--main-color); stroke-width:5;" x1="285" y1="8" x2="285" y2="32"></line> <!-- 110 degrees -->
-						</svg>
-					</div>
+				<div class="arcGauge" style="left:600px; top:28px;">
+					<div class="arcZones" style="background:conic-gradient(from 270deg, #00588c 0deg 95deg, #066a0c 95deg 150deg, #c40000 150deg 180deg, transparent 180deg);"></div>
+					<div id="coolant_temp_perc" class="gauge arcFill"></div>
+					<div class="gaugeBoxDiv arcTicks" style="background:conic-gradient(from 270deg, transparent 0deg 98deg, var(--main-color) 98deg 100deg, transparent 100deg 153deg, var(--main-color) 153deg 155deg, transparent 155deg);"></div> <!-- 70 and 110 degrees -->
+					<div class="icon iconMedium fas fa-thermometer-half arcIcon"></div>
 				</div>
+				<div gid="coolant_temp" class="dseg7 arcValue" style="font-size:55px; left:600px; top:118px; width:170px;">--.-</div>
+				<div gid="coolant_temp_unit" class="tag arcUnit" style="text-align:left; left:778px; top:134px; width:80px;">&deg;C</div>
 
 				<!-- "Pre-flight" checks -->
 
@@ -2364,21 +2331,21 @@ const char mfd_html[] PROGMEM = R"=====(
 				<div id="audio_source" class="dots" style="left:270px; top:33px; width:500px; text-align:left;"></div>
 
 				<div class="tag" style="left:50px; top:142px; width:200px;">Volume</div>
-				<div id="volume" gid="volume" class="dseg7" style="font-size:90px; left:270px; top:100px; width:150px; text-align: left;">-</div>
+				<div id="volume" gid="volume" class="dseg7 volSlider" style="font-size:90px; left:270px; top:100px; width:150px; text-align: left;">-</div>
 
 				<div gid="info_traffic" class="led ledOff" style="left:645px; top:150px; width:140px;">INFO</div>
 
-				<div class="tag" style="left:50px; top:220px; width:200px;">Bass</div>
-				<div id="bass" class="dots" style="left:260px; top:211px; width:100px; text-align:right;">-</div>
-				<div class="tag" style="left:50px; top:290px; width:200px;">Treble</div>
-				<div id="treble" class="dots" style="left:260px; top:281px; width:100px; text-align:right;">-</div>
+				<div class="tag" style="left:50px; top:224px; width:120px; text-align:left; font-size:34px;">Bass</div>
+				<div id="bass" class="dots eqSlider" style="left:170px; top:211px; width:180px; text-align:right;">-</div>
+				<div class="tag" style="left:50px; top:294px; width:120px; text-align:left; font-size:34px;">Treble</div>
+				<div id="treble" class="dots eqSlider" style="left:170px; top:281px; width:180px; text-align:right;">-</div>
 
 				<div gid="loudness" class="led ledOn" style="left:200px; top:360px; width:160px;">LOUD</div>
 
-				<div class="tag" style="left:410px; top:220px; width:200px;">Fader</div>
-				<div id="fader" class="dots" style="left:640px; top:211px; width:150px; text-align:right;">-</div>
-				<div class="tag" style="left:410px; top:290px; width:200px;">Balance</div>
-				<div id="balance" class="dots" style="left:640px; top:281px; width:150px; text-align:right;">-</div>
+				<div class="tag" style="left:410px; top:224px; width:165px; text-align:left; font-size:34px;">Fader</div>
+				<div id="fader" class="dots eqSlider" style="left:575px; top:211px; width:215px; text-align:right;">-</div>
+				<div class="tag" style="left:410px; top:294px; width:165px; text-align:left; font-size:34px;">Balance</div>
+				<div id="balance" class="dots eqSlider" style="left:575px; top:281px; width:215px; text-align:right;">-</div>
 
 				<div id="auto_volume" class="led ledOff" style="left:525px; top:360px; width:260px;">AUTO-VOL</div>
 
@@ -2724,7 +2691,7 @@ const char mfd_html[] PROGMEM = R"=====(
 		<!-- System -->
 
 		<div id="system" style="position:absolute; font-size:22px; background-color:var(--selected-element-color);
-			display:none; left:0px; top:0px; width:1350px; height:550px; text-align:left;"
+			display:none; left:0px; top:0px; width:1350px; height:640px; text-align:left;"
 			on_enter="$('#web_socket_server_host').text(webSocketServerHost);">
 
 			<div style="font-size:50px; text-align:center; padding-top:10px;">System</div>
@@ -2802,28 +2769,34 @@ const char mfd_html[] PROGMEM = R"=====(
 
 		<!-- "Status" line: fixed element in each screen -->
 
-		<div style="position:absolute; top:550px; width:1350px; height:90px;
-			background:linear-gradient(to right, var(--background-color), var(--gradient-high-color), var(--background-color));">
+		<div class="hdrBar" style="position:absolute; left:0px; top:0px; width:1350px; height:70px;"></div>
+
+		<!-- Header tabs: purely visual, they follow the currently shown large screen (body[data-screen]) -->
+		<div class="hdrTabs">
+			<div class="hdrTab" data-for="clock"><span class="fas fa-car-side"></span>HOME</div>
+			<div class="hdrTab" data-for="audio"><span class="fas fa-volume-up"></span>MULTIMEDIA</div>
+			<div class="hdrTab" data-for="instruments"><span class="fas fa-tachometer-alt"></span>ENGINE</div>
+			<div class="hdrTab" data-for="satnav"><span class="fas fa-satellite-dish"></span>NAVIGATION</div>
 		</div>
 
-		<div id="doors_locked" class="iconSmall led ledOff" style="left:20px; top:560px;">
+		<div id="doors_locked" class="iconSmall led ledOff hdrItem" style="left:655px; top:9px; width:50px; height:48px; font-size:30px;">
 			<div class="centerAligned fas fa-lock"></div>
 		</div>
 
-		<div style="left:100px; top:560px; width:230px; position:absolute;">
-			<div id="inst_consumption" gid="inst_consumption" style="width:140px; font-size:55px; text-align:right; position:absolute;">--.-</div>
-			<div id="fuel_consumption_unit_sm" class="tag" style="left:150px; top:24px; width:90px; font-size:31px; text-align:left;">/100</div>
+		<div class="hdrItem" style="left:715px; top:12px; width:190px; position:absolute;">
+			<div id="inst_consumption" gid="inst_consumption" style="width:110px; font-size:36px; text-align:right; position:absolute;">--.-</div>
+			<div id="fuel_consumption_unit_sm" class="tag" style="left:116px; top:14px; width:70px; font-size:24px; text-align:left;">/100</div>
 		</div>
 
-		<div style="left:345px; top:560px; width:220px; position:absolute; height:80px;">
-			<div id="distance_to_empty" gid="distance_to_empty" style="width:150px; font-size:55px; text-align:right;">---</div>
-			<div id="distance_to_empty_icon" class="icon iconSmall" style="top:8px; left:145px;">
+		<div class="hdrItem" style="left:905px; top:12px; width:150px; position:absolute; height:50px;">
+			<div id="distance_to_empty" gid="distance_to_empty" style="width:95px; font-size:36px; text-align:right;">---</div>
+			<div id="distance_to_empty_icon" class="icon iconSmall" style="top:4px; left:100px; font-size:30px;">
 				<div class="fas fa-gas-pump"></div>
 			</div>
 		</div>
 
-		<div id="exterior_temp_shown" gid="exterior_temp_shown" style="display:none; left:590px; top:560px; width:240px; height:70px; position:absolute; text-align:center; font-size:55px;">-- &deg;C</div>
-		<div id="date_time_small" style="display:none; left:840px; top:568px; width:480px; position:absolute; text-align:center; font-size:40px;">---  - --:--</div>
+		<div id="exterior_temp_shown" gid="exterior_temp_shown" class="hdrItem" style="display:none; left:1040px; top:17px; width:100px; height:50px; position:absolute; text-align:center; font-size:28px;">-- &deg;C</div>
+		<div id="date_time_small" class="hdrItem hdrClock" style="display:none; left:1130px; top:24px; width:205px; position:absolute; text-align:center; font-size:19px;">---  - --:--</div>
 )====="
 
 COMMS_LED

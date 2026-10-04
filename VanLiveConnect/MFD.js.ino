@@ -139,6 +139,13 @@ function processJsonObject(item, jsonObject)
 					{
 						let value = propertyObj[property];
 						$(selector).get(0)[attribute][property] = value;
+
+						// Design hook: expose a "scaleX(n)" transform also as CSS variable --pct, for arc gauges
+						if (attribute === "style" && property === "transform")
+						{
+							let m = /scaleX\(([\d.]+)\)/.exec(value);
+							if (m) $(selector).get(0).style.setProperty("--pct", m[1]);
+						} // if
 					} // for
 				}
 				else
@@ -168,6 +175,10 @@ function processJsonObject(item, jsonObject)
 			{
 				// Handle simple "text" objects
 				$(selector).html(itemText);
+
+				// Design hook: expose numeric values also as CSS variable --val, for slider-style elements
+				let num = parseFloat(itemText);
+				if (! isNaN(num)) $(selector).get(0).style.setProperty("--val", num);
 			} // if
 		} // if
 	}); // each
@@ -628,6 +639,9 @@ function changeLargeScreenTo(id)
 	if (id === undefined || id === currentLargeScreenId) return;
 
 	if ($("#" + id).length === 0) return alert("Oops: screen '" + id + "'does not exist!!");
+
+	// Design hook: the header tabs follow the current large screen
+	$("#body").attr("data-screen", id);
 
 	var irFastRepeatValue = 0;
 	if (id === "satnav_choose_from_list")
@@ -1793,7 +1807,9 @@ function setColorTheme(theme, palette)
 				"--notification-color": "rgba(234,216,175,0.95)",
 				"--highlight-color": "rgba(193,155,133,0.4)",
 				"--selected-element-color": "rgb(225,201,180)",
-				"--disabled-element-color": "hsl(38,86%,76%)"
+				"--disabled-element-color": "hsl(38,86%,76%)",
+				"--panel-fill": "rgba(255,255,255,0.55)",
+				"--panel-fill-2": "rgba(255,255,255,0.35)"
 			},
 			"set_dark_theme": {
 				"--main-color": "hsl(38,100%,91%)",
@@ -1803,7 +1819,9 @@ function setColorTheme(theme, palette)
 				"--notification-color": "rgba(89,58,0,0.95)",
 				"--highlight-color": "rgba(255,246,229,0.4)",
 				"--selected-element-color": "rgb(123,80,0)",
-				"--disabled-element-color": "hsl(38,96%,30%)"
+				"--disabled-element-color": "hsl(38,96%,30%)",
+				"--panel-fill": "rgba(6,12,26,0.62)",
+				"--panel-fill-2": "rgba(12,22,44,0.55)"
 			}
 		},
 		"orange_palette": {
@@ -1815,7 +1833,9 @@ function setColorTheme(theme, palette)
 				"--notification-color": "rgba(242,209,192,0.95)",
 				"--highlight-color": "rgba(193,155,133,0.4)",
 				"--selected-element-color": "rgb(225,201,180)",
-				"--disabled-element-color": "hsl(20,86%,76%)"
+				"--disabled-element-color": "hsl(20,86%,76%)",
+				"--panel-fill": "rgba(255,255,255,0.55)",
+				"--panel-fill-2": "rgba(255,255,255,0.35)"
 			},
 			"set_dark_theme": {
 				"--main-color": "hsl(25,80%,85%)",
@@ -1825,7 +1845,9 @@ function setColorTheme(theme, palette)
 				"--notification-color": "rgba(115,38,0,0.95)",
 				"--highlight-color": "rgba(255,206,154,0.4)",
 				"--selected-element-color": "rgb(128,66,0)",
-				"--disabled-element-color": "hsl(25,86%,42%)"
+				"--disabled-element-color": "hsl(25,86%,42%)",
+				"--panel-fill": "rgba(6,12,26,0.62)",
+				"--panel-fill-2": "rgba(12,22,44,0.55)"
 			}
 		},
 		"blue_palette": {
@@ -1837,17 +1859,21 @@ function setColorTheme(theme, palette)
 				"--notification-color": "rgba(205,209,213,0.95)",
 				"--highlight-color": "rgba(84,101,125,0.4)",
 				"--selected-element-color": "rgb(207,205,217)",
-				"--disabled-element-color": "rgb(172,183,202)"
+				"--disabled-element-color": "rgb(172,183,202)",
+				"--panel-fill": "rgba(255,255,255,0.55)",
+				"--panel-fill-2": "rgba(255,255,255,0.35)"
 			},
 			"set_dark_theme": {
 				"--main-color": "hsl(215,42%,91%)",
 				"--background-color": "rgb(8,7,19)",
-				"--gradient-high-color": "hsl(194,83%,40%)",
+				"--gradient-high-color": "hsl(194,100%,50%)",
 				"--led-off-color": "rgb(25,31,40)",
 				"--notification-color": "rgba(15,19,23,0.95)",
 				"--highlight-color": "rgba(223,231,242,0.4)",
 				"--selected-element-color": "rgb(41,55,74)",
-				"--disabled-element-color": "rgb(67,82,105)"
+				"--disabled-element-color": "rgb(67,82,105)",
+				"--panel-fill": "rgba(6,12,26,0.62)",
+				"--panel-fill-2": "rgba(12,22,44,0.55)"
 			}
 		}
 	}
@@ -1922,7 +1948,7 @@ function setLuminosity(luminosity, theme)
 		else
 		{
 			$(":root").css("--main-color", "hsl(215,42%," + luminosity + "%)");
-			$(":root").css("--gradient-high-color", "hsl(194,83%," + ((luminosity - 63) / 2 + 26) + "%)");
+			$(":root").css("--gradient-high-color", "hsl(194,100%," + ((luminosity - 63) / 2 + 36) + "%)");
 		} // if
 	} // if
 
