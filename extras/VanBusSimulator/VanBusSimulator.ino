@@ -14,8 +14,11 @@
  *   and join the grounds.
  *
  * Every 60 seconds the simulator plays a scenario: engine speed and road speed sweep, coolant warms up, fuel
- * slowly drops, the head unit cycles tuner -> CD -> off, a door opens, the left indicator blinks, the dipped beam
- * comes on, and a "Fuel level low!" warning and an information message pop up.
+ * slowly drops, a door opens, the left indicator blinks, the dipped beam comes on, and a "Fuel level low!" warning
+ * and an information message pop up. The air conditioning runs: fan speed steps up and down, recirculation
+ * toggles, the compressor cycles, the evaporator cools down and the condenser pressure follows the engine speed.
+ * The head unit changes source less often (tuner -> CD -> off over 2 minutes), because the display jumps to its
+ * audio page on every source change, like the original MFD.
  *
  * Serial console (115200 baud) commands, one character each:
  *   a = auto scenario on/off      t = tuner     c = CD     o = head unit off
@@ -58,6 +61,8 @@
 #define HEAD_UNIT_IDEN 0x554
 #define AUDIO_SETTINGS_IDEN 0x4D4
 #define ODOMETER_IDEN 0x8FC
+#define AIRCON1_IDEN 0x464
+#define AIRCON2_IDEN 0x4DC
 
 #define CMD_FLAGS 0x08  // As in the VanBus "SendPacket" example
 
@@ -95,6 +100,14 @@ uint8_t cdTrack = 7;
 uint16_t cdSeconds = 222;  // 3:42
 
 uint8_t seq = 0;  // Sequence byte for packets that carry one
+
+// Air conditioning
+bool acOn = true;
+bool compressorOn = true;
+bool recirc = false;
+uint8_t fanStep = 3;      // 0..5, index into the raw fan speed table below
+float evaporatorC = 20;   // Cools down while the compressor runs
+float condenserBar = 6;   // Rises with engine speed while the compressor runs
 
 // ----- Helpers
 
@@ -287,6 +300,36 @@ static void SendHeadUnit()
     } // if
 } // SendHeadUnit
 
+static void SendAirCon1()
+{
+    // 0x464, 5 bytes: [0] 0x10 = A/C icon, 0x04 = recirculation, 0x01 = rear window heater;
+    // [4] reported fan speed (raw; with the A/C icon on: 4, 8, 9, 11, 12, 21 = 1 .. 4 blades)
+    static const uint8_t fanRaw[6] = { 4, 8, 9, 11, 12, 21 };
+    const uint8_t d[5] =
+    {
+        (uint8_t)((acOn ? 0x10 : 0x00) | (recirc ? 0x04 : 0x00)),
+        0x00, 0x00, 0x00,
+        (uint8_t)(acOn ? fanRaw[fanStep] : fanRaw[fanStep] - 2)
+    };
+    Send(AIRCON1_IDEN, d, sizeof(d));
+} // SendAirCon1
+
+static void SendAirCon2()
+{
+    // 0x4DC, 7 bytes: [0] 0x80 = contact key on, 0x40 = A/C enabled, 0x01 = compressor running;
+    // [1] contact key (0x00 = ON); [2] condenser pressure x 4 (bar); [3..4] (evaporator temp + 40) x 10
+    uint16_t evap = (uint16_t)((evaporatorC + 40) * 10);
+    const uint8_t d[7] =
+    {
+        (uint8_t)(0x80 | (acOn ? 0x40 : 0x00) | (compressorOn ? 0x01 : 0x00)),
+        0x00,
+        (uint8_t)(condenserBar * 4),
+        (uint8_t)(evap >> 8), (uint8_t)evap,
+        0x00, 0x00
+    };
+    Send(AIRCON2_IDEN, d, sizeof(d));
+} // SendAirCon2
+
 static void SendVin()
 {
     const char vin[] = "VF38BRHZE81234567";
@@ -303,7 +346,16 @@ static void UpdateScenario(float dt)
     if (autoScenario)
     {
         parked = t < 4;
-        audioSource = t < 25 ? SRC_TUNER : t < 50 ? SRC_CD : SRC_OFF;
+        // Audio on its own, slower 2 minute cycle: every source change makes the display jump to its audio page
+        float ta = fmod(now / 1000.0, 120.0);
+        audioSource = ta < 55 ? SRC_TUNER : ta < 110 ? SRC_CD : SRC_OFF;
+
+        // Air conditioning: fan speed steps every 10 s (up, then down), recirculation for 15 s, compressor cycles
+        static const uint8_t fanSeq[6] = { 1, 2, 3, 5, 4, 2 };
+        fanStep = fanSeq[(int)(t / 10) % 6];
+        recirc = t >= 30 && t < 45;
+        acOn = true;
+        compressorOn = fmod(t, 20.0) < 14;
         doorOpen = t >= 1 && t < 4;
         indicatorLeft = t >= 18 && t < 24;
         dippedBeam = t >= 40;
@@ -322,6 +374,12 @@ static void UpdateScenario(float dt)
         engineRpm = 800 + speedKmh * gearRatio * 0.9;
         if (engineRpm > 6500) engineRpm = 6500;
     } // if
+
+    // Air conditioning physics, roughly
+    float evapTarget = acOn && compressorOn ? 3.0 : exteriorC - 4;
+    evaporatorC += (evapTarget - evaporatorC) * min(1.0f, dt * 0.05f);
+    float condTarget = acOn && compressorOn ? 7.5 + engineRpm / 1000.0 * 1.5 : 5.5;
+    condenserBar += (condTarget - condenserBar) * min(1.0f, dt * 0.5f);
 
     // Slow changes
     if (coolantC < 89) coolantC += dt * 0.5;  // Warms up in about two minutes
@@ -431,7 +489,9 @@ void loop()
     if (tick % 20 == 9) SendAudioSettings();
     if (tick % 20 == 11) SendHeadUnit();
     if (tick % 20 == 13) SendOdometer();
-    if (tick % 100 == 15) SendVin();
+    if (tick % 20 == 15) SendAirCon1();
+    if (tick % 20 == 17) SendAirCon2();
+    if (tick % 100 == 19) SendVin();
 
     static unsigned long lastStatus = 0;
     if (now - lastStatus >= 5000UL)
