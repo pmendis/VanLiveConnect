@@ -440,10 +440,19 @@ static float fuelFrac = -1, coolantFrac = -1;  // From "fuel_level_perc" / "cool
 // Called from DisplayOnJson for the gauge objects the ESP sends to the browser
 static void HmiOnJson(JsonObjectConst d)
 {
+    // Redraw only on an actual change: these arrive with every engine / lights packet
     const char* f = d["fuel_level_perc"]["style"]["transform"] | (const char*)nullptr;
-    if (f && strncmp(f, "scaleX(", 7) == 0) { fuelFrac = atof(f + 7); dirty = true; }
+    if (f && strncmp(f, "scaleX(", 7) == 0)
+    {
+        float v = atof(f + 7);
+        if (v != fuelFrac) { fuelFrac = v; dirty = true; }
+    } // if
     const char* c = d["coolant_temp_perc"]["style"]["transform"] | (const char*)nullptr;
-    if (c && strncmp(c, "scaleX(", 7) == 0) { coolantFrac = atof(c + 7); dirty = true; }
+    if (c && strncmp(c, "scaleX(", 7) == 0)
+    {
+        float v = atof(c + 7);
+        if (v != coolantFrac) { coolantFrac = v; dirty = true; }
+    } // if
 } // HmiOnJson
 
 static String ClockString()
@@ -608,19 +617,98 @@ static void HmiClock()
     IconChip(x0 + 138, 246, IC_ENGINE, On(K_engine_running), H_OK);
 } // HmiClock
 
-static void HmiEngine()
+// -----
+// Speed and RPM gauges
+//
+// Speed and RPM change many times a second, but a full frame takes ~60 ms to render. Between full frames, the
+// Engine page therefore redraws only its two gauges (cached dial, needle, number) into the existing frame, and
+// PushFrame() sends just the blocks that changed. The needles glide toward each new value, so they move smoothly
+// between the updates from the bus; the numbers always show the latest value as received.
+
+#define GAUGE_SPEED_CX 100
+#define GAUGE_RPM_CX 380
+#define GAUGE_CY 142
+#define GAUGE_NUM_BOTTOM 198      // The numbers reach below the dial images, down to the unit labels
+#define NEEDLE_TAU_S 0.06f        // Needle glide time constant
+
+static float needleShown[2] = { -1, -1 };  // Values the needles point at now: [0] speed, [1] rpm; -1 = not yet
+static unsigned long needleStepAt = 0;
+
+static float NeedleTarget(int i)
+{
+    return (i == 0 ? V(K_vehicle_speed) : V(K_engine_rpm)).toFloat();
+} // NeedleTarget
+
+// Move the needles toward the latest values (exponential glide, frame-rate independent)
+static void HmiStepNeedles()
+{
+    unsigned long now = millis();
+    float dt = (now - needleStepAt) / 1000.0f;
+    needleStepAt = now;
+    if (dt > 0.5f) dt = 0.5f;
+    float k = 1.0f - expf(-dt / NEEDLE_TAU_S);
+    for (int i = 0; i < 2; i++)
+    {
+        float t = NeedleTarget(i);
+        if (needleShown[i] < 0) { needleShown[i] = t; continue; }
+        float d = t - needleShown[i];
+        needleShown[i] = fabsf(d) < (i == 0 ? 0.3f : 8.0f) ? t : needleShown[i] + d * k;
+    } // for
+} // HmiStepNeedles
+
+// True while a needle on the visible Engine page has not yet reached its value
+static bool HmiGaugesBusy()
+{
+    if (currentPage != PG_INSTRUMENTS || PopupActive()) return false;
+    for (int i = 0; i < 2; i++) if (needleShown[i] >= 0 && needleShown[i] != NeedleTarget(i)) return true;
+    return false;
+} // HmiGaugesBusy
+
+static void HmiEngineGauges()
 {
     bool mph = V(K_mfd_distance_unit) == "set_units_mph" || V(K_speed_unit) == "mph";
     float vmax = mph ? 140 : 220;
-    float spd = V(K_vehicle_speed).toFloat(), rpm = V(K_engine_rpm).toFloat();
 
-    Gauge(0, 100, 142, spd / vmax, mph ? 1 : 0, speedStops, 5, vmax, mph ? 20 : 40, mph ? 10 : 20, 1, false);
-    Gauge(1, 380, 142, rpm / 7000, 0, rpmStops, 6, 7000, 1000, 500, 1000, true);
+    Gauge(0, GAUGE_SPEED_CX, GAUGE_CY, needleShown[0] / vmax, mph ? 1 : 0, speedStops, 5, vmax, mph ? 20 : 40, mph ? 10 : 20, 1, false);
+    Gauge(1, GAUGE_RPM_CX, GAUGE_CY, needleShown[1] / 7000, 0, rpmStops, 6, 7000, 1000, 500, 1000, true);
 
-    HText(100, 156, OrDash(V(K_vehicle_speed), "--"), hmiFontNum, TC_DATUM, H_FG);
-    HText(100, 198, SpeedUnitStr(), hmiFontSmall, TC_DATUM, H_DIM2);
-    HText(380, 160, OrDash(V(K_engine_rpm), "---"), hmiFontNumS, TC_DATUM, H_FG);
-    HText(380, 198, "rpm", hmiFontSmall, TC_DATUM, H_DIM2);
+    HText(GAUGE_SPEED_CX, 156, OrDash(V(K_vehicle_speed), "--"), hmiFontNum, TC_DATUM, H_FG);
+    HText(GAUGE_RPM_CX, 160, OrDash(V(K_engine_rpm), "---"), hmiFontNumS, TC_DATUM, H_FG);
+} // HmiEngineGauges
+
+// Gauges-only frame. Returns false if it does not apply (other page, popup showing, dials not cached yet).
+static bool HmiFastFrame()
+{
+    if (! useSprite || currentPage != PG_INSTRUMENTS || PopupActive()) return false;
+    if (! dialSpr[0].created() || ! dialSpr[1].created()) return false;
+
+    unsigned long t0 = micros();
+    HmiStepNeedles();
+
+    // Gauge() restores the dial image over the old needle; clear the strip below it where the numbers reach
+    const int stripTop = GAUGE_CY - (GAUGE_R + 8) + DIAL_H;
+    for (int i = 0; i < 2; i++)
+    {
+        int x0 = (i == 0 ? GAUGE_SPEED_CX : GAUGE_RPM_CX) - DIAL_HALF;
+        for (int y = stripTop; y < GAUGE_NUM_BOTTOM; y++) spr.drawFastHLine(x0, y, DIAL_W, BgRow(y));
+    } // for
+    HmiEngineGauges();
+    HFontOff();
+
+    unsigned long t1 = micros();
+    PushFrame();
+    unsigned long t2 = micros();
+    frameDrawUs = t1 - t0;
+    framePushUs = t2 - t1;
+    return true;
+} // HmiFastFrame
+
+static void HmiEngine()
+{
+    HmiStepNeedles();
+    HmiEngineGauges();
+    HText(GAUGE_SPEED_CX, GAUGE_NUM_BOTTOM, SpeedUnitStr(), hmiFontSmall, TC_DATUM, H_DIM2);
+    HText(GAUGE_RPM_CX, GAUGE_NUM_BOTTOM, "rpm", hmiFontSmall, TC_DATUM, H_DIM2);
 
     // Gear
     String gear = V(K_in_reverse) == "YES" ? "R" : OrDash(V(K_chosen_gear), "-");
@@ -757,9 +845,20 @@ static void HmiMedia()
     HText(462, 248, vol >= 0 ? V(K_volume) : String("--"), hmiFontText, MR_DATUM, H_FG);
 } // HmiMedia
 
+// Background gradient. Drawn once, then copied from a PSRAM cache (a bulk copy instead of 150,000 pixel writes).
+static uint8_t* bgCache = nullptr;
+
 static void HmiDrawBackground()
 {
-    for (int y = 0; y < PHYS_H; y++) gfx->drawFastHLine(0, y, PHYS_W, BgRow(y));
+    const size_t bytes = (size_t)PHYS_W * PHYS_H * 2;
+    if (bgCache != nullptr)
+    {
+        memcpy(spr.getPointer(), bgCache, bytes);
+        return;
+    } // if
+    for (int y = 0; y < PHYS_H; y++) spr.drawFastHLine(0, y, PHYS_W, BgRow(y));
+    bgCache = (uint8_t*)ps_malloc(bytes);
+    if (bgCache != nullptr) memcpy(bgCache, spr.getPointer(), bytes);
 } // HmiDrawBackground
 
 // Returns true if the page was drawn here (else Display.ino draws its scaled layout)

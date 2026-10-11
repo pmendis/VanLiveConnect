@@ -124,6 +124,8 @@ static void HmiDrawBanner();
 static bool HmiHandleTouch(int vx, int vy);
 static void HmiSetup();
 static void HmiOnJson(JsonObjectConst d);
+static bool HmiGaugesBusy();
+static bool HmiFastFrame();
 #endif // HMI_LAYOUT
 
 #define HEADER_H 30
@@ -135,6 +137,7 @@ static void HmiOnJson(JsonObjectConst d);
 #define AUDIO_POPUP_MS 4000UL
 #define TOUCH_DEBOUNCE_MS 400UL
 #define REDRAW_INTERVAL_MS 100UL
+#define FAST_FRAME_MS 25UL  // HMI layout: gauges-only frames (speed / RPM), up to 40 per second
 
 // Colours (RGB565)
 #define COL_BG 0x0042        // Deep navy (rgb 6,10,20), like the web page background
@@ -378,6 +381,7 @@ static int currentPage = PG_CLOCK;
 static int tripTab = 1;  // 1 or 2
 static bool fullRedraw = true;
 static bool dirty = true;
+static bool gaugeDirty = false;  // HMI layout: only speed / RPM changed, a gauges-only fast frame is enough
 static TPopupKind popupKind = POPUP_NONE;
 static unsigned long popupUntil = 0;
 static String popupTripTab;  // "TR1", "TR2" or "FUE"
@@ -464,6 +468,10 @@ void DisplayOnJson(const char* json)
         if (s == 0 || vals[i] == s) continue;
         vals[i] = s;
         changed[i] = true;
+      #ifdef HMI_LAYOUT
+        // Speed and RPM change many times a second: the Engine page redraws just its gauges for those
+        if (i == K_vehicle_speed || i == K_engine_rpm) { gaugeDirty = true; continue; }
+      #endif // HMI_LAYOUT
         dirty = true;
     } // for
 
@@ -1240,26 +1248,28 @@ static void DrawTripPopup()
 // -----
 // Redraw
 
-// Push rows y0 .. y0+h-1 of the sprite to the panel.
+// Push the rectangle (x0, y0, w, h) of the sprite to the panel.
 //
 // ILI9488 over SPI only accepts 18-bit colour (3 bytes per pixel). TFT_eSPI converts the sprite's 16-bit pixels
 // one at a time and feeds the SPI FIFO a few bytes at a time, which takes ~690 ms per 480x320 frame at 40 MHz.
-// Here each line is converted into a small buffer in internal RAM and sent with one bulk SPI transfer, which
-// brings a full frame to ~120 ms, close to the wire time. Other panels use the library's native (fast) path.
-static void PushRows(int y0, int h)
+// Here the pixels are converted into a buffer in internal RAM and sent with bulk SPI transfers, which brings a
+// full frame to ~120 ms, close to the wire time. Other panels use the library's native (fast) path.
+static void PushRect(int x0, int y0, int w, int h)
 {
   #ifdef ILI9488_DRIVER
-    static uint8_t lineBuf[PHYS_W * 3];
+    static uint8_t buf[PHYS_W * 3 * 2];  // Up to two full lines per transfer
     const uint8_t* px = (const uint8_t*)spr.getPointer();
     SPIClass& bus = tft.getSPIinstance();
 
     tft.startWrite();
-    tft.setAddrWindow(0, y0, PHYS_W, h);
+    tft.setAddrWindow(x0, y0, w, h);
+    size_t n = 0;
     for (int y = y0; y < y0 + h; y++)
     {
-        const uint8_t* src = px + (size_t)y * PHYS_W * 2;
-        uint8_t* dst = lineBuf;
-        for (int x = 0; x < PHYS_W; x++)
+        if (n + (size_t)w * 3 > sizeof(buf)) { bus.writeBytes(buf, n); n = 0; }
+        const uint8_t* src = px + ((size_t)y * PHYS_W + x0) * 2;
+        uint8_t* dst = buf + n;
+        for (int x = 0; x < w; x++)
         {
             // Sprite pixels are RGB565 stored byte-swapped (big-endian) for SPI
             uint16_t v = ((uint16_t)src[0] << 8) | src[1];
@@ -1268,44 +1278,77 @@ static void PushRows(int y0, int h)
             *dst++ = (v >> 3) & 0xFC;  // G
             *dst++ = (v << 3) & 0xF8;  // B
         } // for
-        bus.writeBytes(lineBuf, sizeof(lineBuf));
+        n += (size_t)w * 3;
     } // for
+    if (n > 0) bus.writeBytes(buf, n);
     tft.endWrite();
   #else
-    spr.pushSprite(0, y0, 0, y0, PHYS_W, h);
+    spr.pushSprite(x0, y0, x0, y0, w, h);
   #endif // ILI9488_DRIVER
-} // PushRows
+} // PushRect
 
-// Push only the rows that changed since the previous frame. A once-a-second refresh then usually sends
-// nothing at all, so it no longer blocks the loop (and taps) for a full-frame transfer.
-static uint32_t rowHash[PHYS_H] = { 0 };
-static bool rowHashValid = false;
+// Push only what changed since the previous frame. Each row is split into blocks of SEG_W pixels with a hash
+// per block; changed blocks are merged into rectangles (same block range on consecutive rows) and only those are
+// sent. A once-a-second refresh then usually sends nothing at all, and a moving gauge needle sends just the
+// blocks around it instead of full-width rows.
+#define SEG_W 32
+#define N_SEGS (PHYS_W / SEG_W)
+static uint32_t segHash[PHYS_H][N_SEGS];
+static bool segHashValid = false;
 
 static void PushFrame()
 {
+    struct TRun { uint8_t a, b; int16_t y0; bool open; };
+    TRun act[N_SEGS];  // Rectangles still growing downward
+    int nAct = 0;
+
     const uint32_t* px = (const uint32_t*)spr.getPointer();
     const int wordsPerRow = PHYS_W / 2;  // 2 pixels per 32-bit word
-    int spanStart = -1;
     for (int y = 0; y <= PHYS_H; y++)
     {
-        bool changed = false;
+        // Which blocks of this row changed?
+        uint32_t mask = 0;
         if (y < PHYS_H)
         {
             const uint32_t* row = px + (size_t)y * wordsPerRow;
-            uint32_t hsh = 2166136261UL;
-            for (int i = 0; i < wordsPerRow; i++) hsh = (hsh ^ row[i]) * 16777619UL;
-            changed = ! rowHashValid || hsh != rowHash[y];
-            rowHash[y] = hsh;
+            for (int s = 0; s < N_SEGS; s++)
+            {
+                const uint32_t* p = row + s * (SEG_W / 2);
+                uint32_t hsh = 2166136261UL;
+                for (int i = 0; i < SEG_W / 2; i++) hsh = (hsh ^ p[i]) * 16777619UL;
+                if (! segHashValid || hsh != segHash[y][s]) mask |= 1UL << s;
+                segHash[y][s] = hsh;
+            } // for
         } // if
 
-        if (changed && spanStart < 0) spanStart = y;
-        else if (! changed && spanStart >= 0)
+        // Runs of changed blocks in this row
+        TRun cur[N_SEGS];
+        int nCur = 0;
+        for (int s = 0; s < N_SEGS; )
         {
-            PushRows(spanStart, y - spanStart);
-            spanStart = -1;
-        } // if
+            if (! (mask >> s & 1)) { s++; continue; }
+            int a = s;
+            while (s < N_SEGS && (mask >> s & 1)) s++;
+            cur[nCur++] = { (uint8_t)a, (uint8_t)(s - 1), (int16_t)y, true };
+        } // for
+
+        // A rectangle grows while the next row has the same run; otherwise it is complete: send it
+        for (int i = 0; i < nAct; i++)
+        {
+            bool grows = false;
+            for (int j = 0; j < nCur && ! grows; j++)
+            {
+                if (cur[j].open && cur[j].a == act[i].a && cur[j].b == act[i].b) { grows = true; cur[j].open = false; }
+            } // for
+            if (grows) continue;
+            PushRect(act[i].a * SEG_W, act[i].y0, (act[i].b - act[i].a + 1) * SEG_W, y - act[i].y0);
+            nAct--;
+            act[i] = act[nAct];
+            i--;
+        } // for
+        for (int j = 0; j < nCur; j++) if (cur[j].open && nAct < N_SEGS) act[nAct++] = cur[j];
     } // for
-    rowHashValid = true;
+    segHashValid = true;
 } // PushFrame
 
 // Frame timing (microseconds): rendering into the sprite, and pushing the sprite to the panel
@@ -1314,13 +1357,16 @@ static unsigned long frameDrawUs = 0, framePushUs = 0, frameDrawMaxUs = 0, frame
 static void Redraw()
 {
     unsigned long t0 = micros();
+  #ifdef HMI_LAYOUT
+    if (useSprite) HmiDrawBackground();  // Covers the whole frame, no need to clear it first
+  #else
     if (useSprite) spr.fillSprite(COL_BG);
+  #endif // HMI_LAYOUT
     else if (fullRedraw) tft.fillScreen(COL_BG);
 
     if (useSprite || ! PopupActive())
     {
       #ifdef HMI_LAYOUT
-        if (useSprite) HmiDrawBackground();
         bool native = HmiDrawPage();
       #else
         DrawHeader();
@@ -1374,6 +1420,7 @@ static void Redraw()
 
     fullRedraw = false;
     dirty = false;
+    gaugeDirty = false;
 } // Redraw
 
 #ifdef DISPLAY_DEMO_BUTTON
@@ -1885,12 +1932,30 @@ void LoopDisplay()
         dirty = true;
     } // if
 
-    if (! dirty && ! fullRedraw) return;
-    if (! urgentRedraw && (long)(millis() - lastRedrawAt) < (long)REDRAW_INTERVAL_MS) return;
-    urgentRedraw = false;
+    bool fullDue = (dirty || fullRedraw)
+        && (urgentRedraw || (long)(millis() - lastRedrawAt) >= (long)REDRAW_INTERVAL_MS);
 
     // Hold the frame while the live view is reading it (with a safety timeout)
-    if (bmpStreamingSince != 0 && millis() - bmpStreamingSince < 3000UL) return;
+    bool streaming = bmpStreamingSince != 0 && millis() - bmpStreamingSince < 3000UL;
+
+  #ifdef HMI_LAYOUT
+    // Speed / RPM changed or a needle is still gliding: redraw only the gauges, between full frames
+    if (! fullDue && ! fullRedraw && (gaugeDirty || HmiGaugesBusy()))
+    {
+        static unsigned long lastFastAt = 0;
+        if (millis() - lastFastAt < FAST_FRAME_MS) return;
+        if ((long)(millis() - lastRedrawAt) < 0) return;  // Splash still showing
+        if (streaming) return;
+        lastFastAt = millis();
+        if (! HmiFastFrame()) dirty = true;  // Not on the Engine page, or a popup is showing: full frame instead
+        gaugeDirty = false;
+        return;
+    } // if
+  #endif // HMI_LAYOUT
+
+    if (! fullDue) return;
+    urgentRedraw = false;
+    if (streaming) return;
 
     lastRedrawAt = millis();
     Redraw();
