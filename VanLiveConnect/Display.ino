@@ -220,9 +220,10 @@ static int TW(const String& text, int tier)
 #else
   #define TOUCH_Z_THRESHOLD 400   // 2.8" panel
 #endif
-#define TOUCH_POLL_MS 5
-#define TOUCH_PRESS_POLLS 2       // Consecutive pressed polls that make a tap (filters single noisy readings)
-#define TOUCH_RELEASE_POLLS 3     // Consecutive released polls before the next tap can start
+#define TOUCH_Z_FLOOR 80          // Below this the panel is surely not touched (for the press log)
+#define TOUCH_POLL_MS 3
+#define TOUCH_MAX_SPREAD 120      // Max difference between the 3 raw X (and 3 raw Y) samples of a valid reading
+#define TOUCH_RELEASE_POLLS 4     // Consecutive released polls before the next tap can start
 
 static inline void TouchClockPulse()
 {
@@ -304,8 +305,10 @@ static inline uint16_t Median3(uint16_t a, uint16_t b, uint16_t c)
     return a > b ? (b > c ? b : (a > c ? c : a)) : (a > c ? a : (b > c ? c : b));
 } // Median3
 
-// One poll of the panel (touch task only). Returns true if pressed; then x, y are raw positions. z = pressure.
-static bool TouchRead(uint16_t& x, uint16_t& y, uint16_t& z)
+// One poll of the panel (touch task only). Returns true if pressed; then x, y are raw positions and 'stable'
+// tells whether the three samples per axis agree (a pen that is landing or lifting gives scattered samples).
+// z = pressure.
+static bool TouchRead(uint16_t& x, uint16_t& y, uint16_t& z, bool& stable)
 {
     digitalWrite(TFT_TOUCH_CS, LOW);
     TouchTransfer(0xB1);                // Throw-away conversion: the panel settles after power-down
@@ -320,6 +323,9 @@ static bool TouchRead(uint16_t& x, uint16_t& y, uint16_t& z)
         uint16_t y3 = TouchTransfer(0xD0);  // Last Y: power down with PENIRQ enabled (PD = 00)
         x = Median3(x1, x2, x3);
         y = Median3(y1, y2, y3);
+        uint16_t xmin = min(x1, min(x2, x3)), xmax = max(x1, max(x2, x3));
+        uint16_t ymin = min(y1, min(y2, y3)), ymax = max(y1, max(y2, y3));
+        stable = xmax - xmin <= TOUCH_MAX_SPREAD && ymax - ymin <= TOUCH_MAX_SPREAD;
     }
     else TouchTransfer(0xD0);  // Power down with PENIRQ enabled
     digitalWrite(TFT_TOUCH_CS, HIGH);
@@ -332,21 +338,37 @@ static bool TouchRead(uint16_t& x, uint16_t& y, uint16_t& z)
 static volatile uint16_t touchQueue[TOUCH_QUEUE_LEN][3];  // raw x, raw y, z
 static volatile uint8_t touchQHead = 0, touchQTail = 0;
 
+// Press log for /tft.touch: every contact (z above the floor) with its length and peak pressure, also those
+// that did not make a tap, for tuning
+#define TOUCH_LOG_LEN 8
+static volatile uint16_t touchLog[TOUCH_LOG_LEN][3];  // polls in contact, peak z, 1 = made a tap
+static volatile uint8_t touchLogHead = 0;
+static volatile uint16_t touchPollsPerSec = 0;
+
 static void TouchTask(void*)
 {
-    int pressedPolls = 0, releasedPolls = TOUCH_RELEASE_POLLS;
+    int releasedPolls = TOUCH_RELEASE_POLLS;
     bool armed = true;
+    uint16_t contactPolls = 0, peakZ = 0;
+    bool contactTapped = false;
+    uint16_t polls = 0;
+    unsigned long pollsSince = millis();
+
     for (;;)
     {
         uint16_t x = 0, y = 0, z = 0;
-        if (TouchRead(x, y, z))
+        bool stable = false;
+        bool pressed = TouchRead(x, y, z, stable);
+
+        if (pressed)
         {
             releasedPolls = 0;
-            // A tap: pressed on consecutive polls; the position is taken from the confirming poll, when the pen
-            // has landed properly
-            if (armed && ++pressedPolls >= TOUCH_PRESS_POLLS)
+            // A tap: the first pressed reading whose samples agree. One good reading is enough, so a quick tap
+            // (a few tens of ms, with the contact flickering while the pen lands) is not missed.
+            if (armed && stable)
             {
                 armed = false;
+                contactTapped = true;
                 uint8_t next = (touchQHead + 1) % TOUCH_QUEUE_LEN;
                 if (next != touchQTail)
                 {
@@ -358,11 +380,31 @@ static void TouchTask(void*)
                 } // if
             } // if
         }
-        else
+        else if (! armed && ++releasedPolls >= TOUCH_RELEASE_POLLS) armed = true;
+
+        // Press log
+        if (z >= TOUCH_Z_FLOOR)
         {
-            pressedPolls = 0;
-            if (! armed && ++releasedPolls >= TOUCH_RELEASE_POLLS) armed = true;
+            contactPolls++;
+            if (z > peakZ) peakZ = z;
+        }
+        else if (contactPolls > 0)
+        {
+            touchLog[touchLogHead][0] = contactPolls;
+            touchLog[touchLogHead][1] = peakZ;
+            touchLog[touchLogHead][2] = contactTapped ? 1 : 0;
+            touchLogHead = (touchLogHead + 1) % TOUCH_LOG_LEN;
+            contactPolls = 0; peakZ = 0; contactTapped = false;
         } // if
+
+        polls++;
+        if (millis() - pollsSince >= 1000UL)
+        {
+            touchPollsPerSec = polls;
+            polls = 0;
+            pollsSince = millis();
+        } // if
+
         vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
     } // for
 } // TouchTask
@@ -1825,7 +1867,14 @@ void DisplayRegisterDebugHttp(AsyncWebServer& server)
         for (int i = 0; i < 6; i++)
             b += "raw x=" + String(touchHist[i][0]) + " y=" + String(touchHist[i][1]) + " -> screen x=" + String(touchHist[i][2]) + " y=" + String(touchHist[i][3])
                 + "  z=" + String(touchHist[i][4]) + "\n";
-        b += "touch threshold z >= " + String(TOUCH_Z_THRESHOLD) + "\n";
+        b += "touch threshold z >= " + String(TOUCH_Z_THRESHOLD) + ", polls/s " + String(touchPollsPerSec) + "\n";
+        b += "contacts (newest first): polls x " + String(TOUCH_POLL_MS) + " ms, peak z, tap\n";
+        for (int i = 1; i <= TOUCH_LOG_LEN; i++)
+        {
+            int k = (touchLogHead + TOUCH_LOG_LEN - i) % TOUCH_LOG_LEN;
+            if (touchLog[k][0] == 0) continue;
+            b += "  " + String(touchLog[k][0]) + " polls, peak z=" + String(touchLog[k][1]) + (touchLog[k][2] ? "  TAP\n" : "  (no tap)\n");
+        } // for
         request->send(200, "text/plain", b);
     });
     server.on("/tft.raw", HTTP_GET, [](AsyncWebServerRequest* request)
