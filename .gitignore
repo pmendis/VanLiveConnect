@@ -1,2 +1,5 @@
 # Local Claude Code session files (preview server config etc.)
 .claude/
+
+# Generated TFT boot logo (extras/Scripts/make_logo.py): brand logos are trademarks, keep them out of the repo
+VanLiveConnect/LogoBitmap.h

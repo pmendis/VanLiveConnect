@@ -45,6 +45,13 @@
 #include <TFT_eSPI.h>
 #include <ArduinoJson.h>
 
+// Optional boot logo, generated locally by extras/Scripts/make_logo.py (git-ignored: brand logos are trademarks).
+// Without it, the boot screen shows the "VanLiveConnect" text splash.
+#if __has_include("LogoBitmap.h")
+  #include "LogoBitmap.h"
+  #define HAVE_BOOT_LOGO
+#endif
+
 // Defined in WebSocket.ino
 extern int nWebSocketConnections;
 
@@ -1989,6 +1996,10 @@ void DisplayRegisterHttp(AsyncWebServer& server)
 // Show a one-line status text at the bottom of the screen (used during start-up, before the first redraw)
 void DisplayStatusLine(const char* text)
 {
+  #ifdef HAVE_BOOT_LOGO
+    (void)text;  // The boot logo stays clean; the start-up steps are on the serial console
+    return;
+  #endif // HAVE_BOOT_LOGO
     tft.setTextDatum(BC_DATUM);
     tft.setTextPadding(PHYS_W - 8);
     tft.setTextColor(COL_DIM, COL_BG);
@@ -2009,6 +2020,28 @@ void SetupDisplay()
     // Poll the touch panel from its own task on the other core (the main loop runs on core 1)
     xTaskCreatePinnedToCore(TouchTask, "touch", 3072, nullptr, 1, nullptr, 0);
 
+  #ifdef HAVE_BOOT_LOGO
+    // Boot logo, centred on black: 4-bit grey, two pixels per byte, drawn line by line
+    tft.fillScreen(TFT_BLACK);
+    {
+        static uint16_t line[LOGO_W];
+        const int x0 = (PHYS_W - LOGO_W) / 2, y0 = (PHYS_H - LOGO_H) / 2;
+        tft.setSwapBytes(true);
+        for (int y = 0; y < LOGO_H; y++)
+        {
+            const uint8_t* src = logoBitmap + (size_t)y * (LOGO_W / 2);
+            for (int x = 0; x < LOGO_W; x += 2)
+            {
+                uint8_t b = pgm_read_byte(src + x / 2);
+                uint8_t g1 = (b >> 4) * 17, g2 = (b & 0x0F) * 17;
+                line[x] = tft.color565(g1, g1, g1);
+                line[x + 1] = tft.color565(g2, g2, g2);
+            } // for
+            tft.pushImage(x0, y0 + y, LOGO_W, 1, line);
+        } // for
+        tft.setSwapBytes(false);
+    }
+  #else
     // Splash
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(COL_ACCENT, COL_BG);
@@ -2021,6 +2054,7 @@ void SetupDisplay()
     tft.drawString("http://" IP_ADDR "/MFD.html", PHYS_W / 2, SY(170), 2);
   #endif // WIFI_AP_MODE
     tft.drawString("Waiting for VAN bus data...", PHYS_W / 2, SY(205), 2);
+  #endif // HAVE_BOOT_LOGO
 
     // Full-screen 16-bit sprite: 320 x 240 x 2 = 150 KB, goes to PSRAM
     spr.setColorDepth(16);
