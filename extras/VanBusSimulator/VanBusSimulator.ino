@@ -423,7 +423,7 @@ void loop()
     blinkPhase = (now / 400) % 2;
 
     // Send rates roughly like a real car: dashboard often, the rest less often
-    if (tick % 2 == 0) SendDashboard();
+    SendDashboard();  // Every ~50 ms, like a real car (about 20 per second)
     if (tick % 4 == 1) SendLightsStatus();
     if (tick % 10 == 3) SendEngine();
     if (tick % 10 == 5) SendCarStatus1();
