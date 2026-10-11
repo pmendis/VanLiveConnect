@@ -98,9 +98,16 @@ static void CivilFromDays(int32_t z, int& y, int& m, int& d)
     y = (int)(yy + (m <= 2 ? 1 : 0));
 } // CivilFromDays
 
-// Landscape orientation
+// All page layout is done on a virtual 320 x 240 canvas (landscape); the drawing helpers scale to the physical
+// panel size, which TFT_eSPI gets from the build defines (TFT_WIDTH x TFT_HEIGHT in portrait orientation).
+// Supported: 2.8" 320x240 (ILI9341) and 3.5" 480x320 (ILI9488). On the larger panel bigger fonts are used.
 #define SCREEN_W 320
 #define SCREEN_H 240
+#define PHYS_W TFT_HEIGHT
+#define PHYS_H TFT_WIDTH
+#define BIG_DISPLAY (PHYS_W >= 480)
+static inline int SX(int v) { return (int)((long)v * PHYS_W / SCREEN_W); }
+static inline int SY(int v) { return (int)((long)v * PHYS_H / SCREEN_H); }
 
 #define HEADER_H 30
 #define PANEL_Y 34
@@ -133,6 +140,51 @@ static TFT_eSPI tft;
 static TFT_eSprite spr(&tft);
 static bool useSprite = false;
 static TFT_eSPI* gfx = &tft;  // Points to 'spr' when the sprite is in use
+
+// -----
+// Drawing wrappers: take virtual-canvas coordinates, draw at physical size
+
+static void FillRR(int x, int y, int w, int h, int r, uint32_t c, uint32_t bg) { gfx->fillSmoothRoundRect(SX(x), SY(y), SX(w), SY(h), SX(r), c, bg); }
+static void DrawRR(int x, int y, int r, int ir, int w, int h, uint32_t c, uint32_t bg) { gfx->drawSmoothRoundRect(SX(x), SY(y), SX(r), SX(ir), SX(w), SY(h), c, bg); }
+static void FillCircle(int x, int y, int r, uint32_t c, uint32_t bg) { gfx->fillSmoothCircle(SX(x), SY(y), SX(r), c, bg); }
+static void DrawCircle(int x, int y, int r, uint32_t c, uint32_t bg) { gfx->drawSmoothCircle(SX(x), SY(y), SX(r), c, bg); }
+static void FillRect(int x, int y, int w, int h, uint32_t c) { gfx->fillRect(SX(x), SY(y), SX(w), SY(h), c); }
+static void HLine(int x, int y, int w, uint32_t c) { gfx->drawFastHLine(SX(x), SY(y), SX(w), c); }
+static void FillTri(int x0, int y0, int x1, int y1, int x2, int y2, uint32_t c) { gfx->fillTriangle(SX(x0), SY(y0), SX(x1), SY(y1), SX(x2), SY(y2), c); }
+static void Arc(int cx, int cy, int r, int ir, int a0, int a1, uint32_t fg, uint32_t bg, bool smooth) { gfx->drawArc(SX(cx), SY(cy), SX(r), SX(ir), a0, a1, fg, bg, smooth); }
+
+// Font tiers (the numbers are TFT_eSPI built-in font ids on the 320x240 panel): 2 = small text, 4 = medium text,
+// 6 / 7 = large digits. On the 480x320 panel each tier maps to a larger font.
+static void UseFont(int tier)
+{
+    if (! BIG_DISPLAY) { gfx->setTextFont(tier); return; }
+    switch (tier)
+    {
+        case 1: gfx->setFreeFont(&FreeSans9pt7b); break;         // Compact text (chips, gauge titles)
+        case 2: gfx->setFreeFont(&FreeSans12pt7b); break;        // 16 px -> ~24 px, close to the 1.5x scale
+        case 4: gfx->setFreeFont(&FreeSansBold18pt7b); break;    // 26 px -> ~40 px
+        case 6: gfx->setTextFont(6); break;                      // 48 px: larger would collide with rows below
+        case 7: gfx->setTextFont(8); break;                      // Clock: 48 px -> 75 px (digits only)
+        default: gfx->setTextFont(tier); break;
+    } // switch
+} // UseFont
+
+// Font height in virtual-canvas units
+static int FH(int tier)
+{
+    UseFont(tier);
+    return (int)((long)gfx->fontHeight() * SCREEN_H / PHYS_H);
+} // FH
+
+// Baseline offset of the large-digit font (font 6: 38 px below the top) in virtual-canvas units
+#define DIGITS_BASELINE (38 * SCREEN_H / PHYS_H)
+
+// Text width in virtual-canvas units
+static int TW(const String& text, int tier)
+{
+    UseFont(tier);
+    return (int)((long)gfx->textWidth(text) * SCREEN_W / PHYS_W);
+} // TW
 
 // -----
 // XPT2046 touch controller, bit-banged SPI
@@ -467,21 +519,22 @@ static void Text(int x, int y, const char* s, int font, uint8_t datum, uint16_t 
 {
     gfx->setTextDatum(datum);
     gfx->setTextColor(color, bg);
-    gfx->drawString(s, x, y, font);
+    UseFont(font);
+    gfx->drawString(s, SX(x), SY(y));
 } // Text
 
 // Rounded panel frame with a slightly lighter fill
 static void Panel(int x, int y, int w, int h)
 {
-    gfx->fillSmoothRoundRect(x, y, w, h, 10, COL_PANEL, COL_BG);
-    gfx->drawSmoothRoundRect(x, y, 10, 8, w, h, COL_ACCENT, COL_PANEL);
+    FillRR(x, y, w, h, 10, COL_PANEL, COL_BG);
+    DrawRR(x, y, 10, 8, w, h, COL_ACCENT, COL_PANEL);
 } // Panel
 
 // Value in font 4 followed by its unit in font 2
 static void ValueUnit(int x, int y, const char* value, const char* unit, uint16_t color = COL_FG)
 {
     Text(x, y, value, 4, TL_DATUM, color);
-    int vw = gfx->textWidth(value, 4);
+    int vw = TW(value, 4);
     Text(x + vw + 5, y + 8, unit, 2, TL_DATUM, COL_DIM);
 } // ValueUnit
 
@@ -503,7 +556,7 @@ static void ArcGauge(int cx, int cy, int r, const TArcZone* zones, int nZones, i
     {
         int a0 = 90 + startPct * 180 / 100;
         int a1 = 90 + zones[i].endPercent * 180 / 100;
-        if (a1 > a0) gfx->drawArc(cx, cy, r, r - 8, a0, a1, zones[i].color, COL_PANEL, false);
+        if (a1 > a0) Arc(cx, cy, r, r - 8, a0, a1, zones[i].color, COL_PANEL, false);
         startPct = zones[i].endPercent;
     } // for
 
@@ -512,20 +565,20 @@ static void ArcGauge(int cx, int cy, int r, const TArcZone* zones, int nZones, i
     if (percent > 0)
     {
         int a1 = 90 + percent * 180 / 100;
-        gfx->drawArc(cx, cy, r - 1, r - 7, 90, a1, COL_FG, COL_PANEL, false);
+        Arc(cx, cy, r - 1, r - 7, 90, a1, COL_FG, COL_PANEL, false);
     } // if
 
     // Tick marks at 25 / 50 / 75 %
     for (int p = 25; p <= 75; p += 25)
     {
         int a = 90 + p * 180 / 100;
-        gfx->drawArc(cx, cy, r + 3, r - 10, a - 1, a + 1, COL_DIM, COL_PANEL, false);
+        Arc(cx, cy, r + 3, r - 10, a - 1, a + 1, COL_DIM, COL_PANEL, false);
     } // for
 
-    Text(cx, cy - r - 4, label, 2, BC_DATUM, COL_DIM);
+    Text(cx, cy - r - 4, label, BIG_DISPLAY ? 1 : 2, BC_DATUM, COL_DIM);
 
-    int vw = gfx->textWidth(value, 4);
-    int uw = gfx->textWidth(unit, 2);
+    int vw = TW(value, 4);
+    int uw = TW(unit, 2);
     int x0 = cx - (vw + 4 + uw) / 2;
     Text(x0, cy + 4, value, 4, TL_DATUM, COL_FG);
     Text(x0 + vw + 4, cy + 10, unit, 2, TL_DATUM, COL_DIM);
@@ -536,11 +589,11 @@ static void Slider(int x, int y, int w, int percent)
 {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
-    gfx->fillSmoothRoundRect(x, y, w, 6, 3, COL_DIM, COL_PANEL);
+    FillRR(x, y, w, 6, 3, COL_DIM, COL_PANEL);
     int fill = w * percent / 100;
-    if (fill > 6) gfx->fillSmoothRoundRect(x, y, fill, 6, 3, COL_ACCENT, COL_PANEL);
-    gfx->fillSmoothCircle(x + fill, y + 3, 7, COL_ACCENT, COL_PANEL);
-    gfx->fillSmoothCircle(x + fill, y + 3, 3, COL_FG, COL_ACCENT);
+    if (fill > 6) FillRR(x, y, fill, 6, 3, COL_ACCENT, COL_PANEL);
+    FillCircle(x + fill, y + 3, 7, COL_ACCENT, COL_PANEL);
+    FillCircle(x + fill, y + 3, 3, COL_FG, COL_ACCENT);
 } // Slider
 
 // Plain level bar
@@ -548,16 +601,17 @@ static void Bar(int x, int y, int w, int percent, uint16_t color = COL_ACCENT)
 {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
-    gfx->fillSmoothRoundRect(x, y, w, 8, 4, COL_LED_OFF, COL_PANEL);
+    FillRR(x, y, w, 8, 4, COL_LED_OFF, COL_PANEL);
     int fill = w * percent / 100;
-    if (fill > 8) gfx->fillSmoothRoundRect(x, y, fill, 8, 4, color, COL_PANEL);
+    if (fill > 8) FillRR(x, y, fill, 8, 4, color, COL_PANEL);
 } // Bar
 
 // Small pill-style indicator, lit or dimmed
 static void Chip(int x, int y, int w, const char* text, bool on, uint16_t onColor = COL_ACCENT)
 {
-    gfx->fillSmoothRoundRect(x, y, w, 18, 5, on ? onColor : COL_LED_OFF, COL_PANEL);
-    Text(x + w / 2, y + 9, text, 2, MC_DATUM, on ? COL_FG : COL_DIM, on ? onColor : COL_LED_OFF);
+    FillRR(x, y, w, 18, 5, on ? onColor : COL_LED_OFF, COL_PANEL);
+    int tier = TW(text, 2) > w - 4 ? 1 : 2;
+    Text(x + w / 2, y + 9, text, tier, MC_DATUM, on ? COL_FG : COL_DIM, on ? onColor : COL_LED_OFF);
 } // Chip
 
 // Arrow (compass needle) pointing 'deg' degrees clockwise from up
@@ -569,8 +623,8 @@ static void Arrow(int cx, int cy, int len, int deg, uint16_t color)
     int bx = cx - (int)(len * 0.55f * s), by = cy + (int)(len * 0.55f * c);
     int lx = bx + (int)(len * 0.45f * c), ly = by + (int)(len * 0.45f * s);
     int rx = bx - (int)(len * 0.45f * c), ry = by - (int)(len * 0.45f * s);
-    gfx->fillTriangle(tipX, tipY, lx, ly, cx, cy, color);
-    gfx->fillTriangle(tipX, tipY, rx, ry, cx, cy, COL_DIM);
+    FillTri(tipX, tipY, lx, ly, cx, cy, color);
+    FillTri(tipX, tipY, rx, ry, cx, cy, COL_DIM);
 } // Arrow
 
 // Word-wrapped text, font 2, up to 'maxLines' lines. Returns number of lines drawn.
@@ -581,7 +635,7 @@ static int Wrapped(int x, int y, int w, const String& text, int maxLines, uint16
     while (msg.length() > 0 && line < maxLines)
     {
         String part = msg;
-        while (gfx->textWidth(part, 2) > w && part.length() > 1)
+        while (TW(part, 2) > w && part.length() > 1)
         {
             int cut = part.lastIndexOf(' ');
             part = cut > 0 ? part.substring(0, cut) : part.substring(0, part.length() - 1);
@@ -601,30 +655,35 @@ static void DrawHeader()
 {
     bool busAlive = millis() - lastActivityAt < 2000UL && VanBusRx.GetCount() > 0;
 
-    gfx->fillSmoothRoundRect(0, 0, SCREEN_W, HEADER_H, 8, COL_PANEL, COL_BG);
-    gfx->drawFastHLine(0, HEADER_H, SCREEN_W, COL_ACCENT);
+    FillRR(0, 0, SCREEN_W, HEADER_H, 8, COL_PANEL, COL_BG);
+    HLine(0, HEADER_H, SCREEN_W, COL_ACCENT);
 
-    // Page tabs (tappable: see HandleTouch)
+    // Page tabs (tappable: see HandleTouch), spaced to fit left of the bus dot
+    int total = 0;
+    for (int i = 0; i < N_PAGES; i++) total += TW(pageTabs[i], 2);
+    int gap = (SCREEN_W - 24 - 6 - total) / (N_PAGES - 1);
+    if (gap > 11) gap = 11;
+    if (gap < 3) gap = 3;
     int x = 6;
     for (int i = 0; i < N_PAGES; i++)
     {
         bool active = i == currentPage;
-        int w = gfx->textWidth(pageTabs[i], 2);
+        int w = TW(pageTabs[i], 2);
         tabX0[i] = x - 5; tabX1[i] = x + w + 5;
         Text(x, 7, pageTabs[i], 2, TL_DATUM, active ? COL_FG : COL_DIM);
-        if (active) gfx->fillRect(x - 2, HEADER_H - 3, w + 4, 3, COL_ACCENT);
-        x += w + 11;
+        if (active) FillRect(x - 2, HEADER_H - 3, w + 4, 3, COL_ACCENT);
+        x += w + gap;
     } // for
 
     // Bus liveness dot on the right
-    gfx->fillSmoothCircle(SCREEN_W - 12, HEADER_H / 2, 5, busAlive ? COL_OK : COL_DIM, COL_PANEL);
+    FillCircle(SCREEN_W - 12, HEADER_H / 2, 5, busAlive ? COL_OK : COL_DIM, COL_PANEL);
 } // DrawHeader
 
 static void DrawFooter()
 {
     for (int i = 0; i < N_PAGES; i++)
     {
-        gfx->fillSmoothCircle(SCREEN_W / 2 + (i - 3) * 14 - 7, PANEL_BOTTOM + 12, 3, i == currentPage ? COL_ACCENT : COL_DIM, COL_BG);
+        FillCircle(SCREEN_W / 2 + (i - 3) * 14 - 7, PANEL_BOTTOM + 12, 3, i == currentPage ? COL_ACCENT : COL_DIM, COL_BG);
     } // for
     String ws = "WS " + String(nWebSocketConnections);
     Text(SCREEN_W - 8, PANEL_BOTTOM + 12, ws.c_str(), 2, MR_DATUM, COL_DIM, COL_BG);
@@ -632,7 +691,7 @@ static void DrawFooter()
 
   #ifdef DISPLAY_DEMO_BUTTON
     // TEMPORARY demo button
-    gfx->fillSmoothRoundRect(DEMO_BTN_X, PANEL_BOTTOM + 3, DEMO_BTN_W, 18, 5, demoMode ? COL_WARN : COL_LED_OFF, COL_BG);
+    FillRR(DEMO_BTN_X, PANEL_BOTTOM + 3, DEMO_BTN_W, 18, 5, demoMode ? COL_WARN : COL_LED_OFF, COL_BG);
     Text(DEMO_BTN_X + DEMO_BTN_W / 2, PANEL_BOTTOM + 12, "DEMO", 2, MC_DATUM, demoMode ? COL_FG : COL_DIM, demoMode ? COL_WARN : COL_LED_OFF);
   #endif // DISPLAY_DEMO_BUTTON
 } // DrawFooter
@@ -700,10 +759,12 @@ static void DrawInstruments()
     // Speed and engine speed
     int y = PANEL_Y + 90;
     Text(14, y, OrDash(V(K_vehicle_speed), "--"), 6, TL_DATUM, COL_FG);
-    int sw = gfx->textWidth(OrDash(V(K_vehicle_speed), "--"), 6);
-    Text(14 + sw + 6, y + 28, SpeedUnitStr(), 2, TL_DATUM, COL_DIM);
+    int sw = TW(OrDash(V(K_vehicle_speed), "--"), 6);
+    if (BIG_DISPLAY) Text(14 + sw + 6, y + DIGITS_BASELINE, SpeedUnitStr(), 2, BL_DATUM, COL_DIM);
+    else Text(14 + sw + 6, y + 28, SpeedUnitStr(), 2, TL_DATUM, COL_DIM);
     Text(SCREEN_W - 44, y, OrDash(V(K_engine_rpm), "---"), 6, TR_DATUM, COL_FG);
-    Text(SCREEN_W - 40, y + 28, "rpm", 2, TL_DATUM, COL_DIM);
+    if (BIG_DISPLAY) Text(SCREEN_W - 40, y + DIGITS_BASELINE, "rpm", 2, BL_DATUM, COL_DIM);
+    else Text(SCREEN_W - 40, y + 28, "rpm", 2, TL_DATUM, COL_DIM);
 
     // Odometer, power, torque
     y = PANEL_Y + 140;
@@ -751,17 +812,18 @@ static void DrawPreflight()
     // VIN
     Text(14, PANEL_Y + 146, "VIN", 2, TL_DATUM, COL_ACCENT);
     Text(54, PANEL_Y + 146, OrDash(V(K_vin), "-----------------"), 2, TL_DATUM, COL_FG);
-    Text(14, PANEL_Y + 162, "Dash light", 2, TL_DATUM, COL_ACCENT);
-    Text(100, PANEL_Y + 162, OrDash(V(K_dash_light), "--"), 2, TL_DATUM, COL_FG);
+    int dy = FH(2) > 16 ? FH(2) : 16;
+    Text(14, PANEL_Y + 146 + dy, "Dash light", 2, TL_DATUM, COL_ACCENT);
+    Text(14 + TW("Dash light", 2) + 12, PANEL_Y + 146 + dy, OrDash(V(K_dash_light), "--"), 2, TL_DATUM, COL_FG);
 } // DrawPreflight
 
 // Simple speaker glyph for the station tile
 static void SpeakerGlyph(int x, int y)
 {
-    gfx->fillRect(x, y + 8, 8, 12, COL_FG);
-    gfx->fillTriangle(x + 8, y + 8, x + 20, y, x + 20, y + 28, COL_FG);
-    gfx->drawArc(x + 22, y + 14, 10, 8, 120, 240, COL_FG, COL_ACCENT, false);
-    gfx->drawArc(x + 22, y + 14, 16, 14, 120, 240, COL_FG, COL_ACCENT, false);
+    FillRect(x, y + 8, 8, 12, COL_FG);
+    FillTri(x + 8, y + 8, x + 20, y, x + 20, y + 28, COL_FG);
+    Arc(x + 22, y + 14, 10, 8, 120, 240, COL_FG, COL_ACCENT, false);
+    Arc(x + 22, y + 14, 16, 14, 120, 240, COL_FG, COL_ACCENT, false);
 } // SpeakerGlyph
 
 static const char* MediaStatusStr(const String& s)
@@ -793,7 +855,7 @@ static void DrawAudio()
         src == "NAVIGATION" ? "Navigation" :
         On(K_head_unit_power) ? "Head unit" : "Head unit off";
 
-    gfx->fillSmoothRoundRect(14, PANEL_Y + 12, 56, 56, 10, COL_ACCENT, COL_PANEL);
+    FillRR(14, PANEL_Y + 12, 56, 56, 10, COL_ACCENT, COL_PANEL);
     SpeakerGlyph(26, PANEL_Y + 26);
     Text(82, PANEL_Y + 10, title, 4, TL_DATUM, COL_ACCENT);
 
@@ -807,9 +869,10 @@ static void DrawAudio()
 
         const char* freq = OrDash(V(K_frequency), "---.-");
         Text(82, PANEL_Y + 38, freq, 6, TL_DATUM, COL_FG);
-        int fw = gfx->textWidth(freq, 6);
+        int fw = TW(freq, 6);
         if (V(K_frequency_h).length() > 0 && V(K_frequency_h) != "-") Text(82 + fw + 2, PANEL_Y + 40, V(K_frequency_h).c_str(), 4, TL_DATUM, COL_FG);
-        Text(82 + fw + 24, PANEL_Y + 68, OrDash(V(K_frequency_unit), ""), 2, TL_DATUM, COL_DIM);
+        if (BIG_DISPLAY) Text(82 + fw + 24, PANEL_Y + 38 + DIGITS_BASELINE, OrDash(V(K_frequency_unit), ""), 2, BL_DATUM, COL_DIM);
+        else Text(82 + fw + 24, PANEL_Y + 68, OrDash(V(K_frequency_unit), ""), 2, TL_DATUM, COL_DIM);
 
         Text(14, PANEL_Y + 88, OrDash(V(K_rds_text), ""), 4, TL_DATUM, COL_FG);
 
@@ -928,7 +991,7 @@ static void DrawNav()
 
     // Compass: current heading
     int hdg = V(K_satnav_curr_heading).length() > 0 ? V(K_satnav_curr_heading).toInt() : -1;
-    gfx->drawSmoothCircle(SCREEN_W - 44, PANEL_Y + 40, 26, COL_DIM, COL_PANEL);
+    DrawCircle(SCREEN_W - 44, PANEL_Y + 40, 26, COL_DIM, COL_PANEL);
     Text(SCREEN_W - 44, PANEL_Y + 6, "N", 2, TC_DATUM, COL_DIM);
     if (hdg >= 0) Arrow(SCREEN_W - 44, PANEL_Y + 40, 20, hdg, COL_ACCENT);
 
@@ -1032,15 +1095,15 @@ static void DrawSystem()
 static void PopupCard(int& x, int& y, int& w, int& h, uint16_t border, bool hint = true)
 {
     x = 18; y = 52; w = SCREEN_W - 36; h = 126;
-    gfx->fillSmoothRoundRect(x, y, w, h, 12, COL_PANEL, COL_BG);
-    gfx->drawSmoothRoundRect(x, y, 12, 10, w, h, border, COL_PANEL);
+    FillRR(x, y, w, h, 12, COL_PANEL, COL_BG);
+    DrawRR(x, y, 12, 10, w, h, border, COL_PANEL);
     if (hint) Text(x + w / 2, y + h - 6, "tap to dismiss", 2, BC_DATUM, COL_DIM);
 } // PopupCard
 
 static void WarningTriangle(int tx, int ty, uint16_t color)
 {
-    gfx->fillTriangle(tx, ty - 22, tx - 24, ty + 18, tx + 24, ty + 18, color);
-    gfx->fillTriangle(tx, ty - 14, tx - 17, ty + 14, tx + 17, ty + 14, COL_PANEL);
+    FillTri(tx, ty - 22, tx - 24, ty + 18, tx + 24, ty + 18, color);
+    FillTri(tx, ty - 14, tx - 17, ty + 14, tx + 17, ty + 14, COL_PANEL);
     Text(tx, ty + 2, "!", 4, MC_DATUM, color);
 } // WarningTriangle
 
@@ -1052,7 +1115,7 @@ static void DrawNotificationPopup()
     if (warning) WarningTriangle(x + 34, y + h / 2 - 8, COL_WARN);
     else
     {
-        gfx->fillSmoothCircle(x + 34, y + h / 2 - 8, 20, COL_ACCENT, COL_PANEL);
+        FillCircle(x + 34, y + h / 2 - 8, 20, COL_ACCENT, COL_PANEL);
         Text(x + 34, y + h / 2 - 8, "i", 4, MC_DATUM, COL_FG, COL_ACCENT);
     } // if
     Wrapped(x + 72, y + 22, w - 84, V(K_notification_message_on_mfd), 4, COL_FG);
@@ -1086,7 +1149,9 @@ static void DrawAudioPopup()
     int vol = V(K_volume).length() > 0 ? V(K_volume).toInt() : 0;
     Text(x + 12, y + 28, "Volume", 2, TL_DATUM, COL_DIM);
     Text(x + w - 12, y + 24, OrDash(V(K_volume), "--"), 4, TR_DATUM, COL_FG);
-    Slider(x + 74, y + 34, w - 74 - 60, vol * 100 / 30);
+    int vx = 12 + TW("Volume", 2) + 8;
+    if (vx < 74) vx = 74;
+    Slider(x + vx, y + 34, w - vx - 60, vol * 100 / 30);
 
     struct { const char* label; TDisplayKey key; } rows[4] = { { "Bass", K_bass }, { "Treble", K_treble }, { "Fader", K_fader }, { "Balance", K_balance } };
     for (int i = 0; i < 4; i++)
@@ -1095,7 +1160,11 @@ static void DrawAudioPopup()
         int ry = y + 50 + (i / 2) * 22;
         int v = V(rows[i].key).length() > 0 ? V(rows[i].key).toInt() : 0;
         Text(rx, ry + 2, rows[i].label, 2, TL_DATUM, COL_DIM);
-        Slider(rx + 56, ry + 6, w / 2 - 56 - 44, (v + 9) * 100 / 18);
+        int lx = TW(rows[i].label, 2) + 8;
+        if (lx < 56) lx = 56;
+        int sw = w / 2 - lx - 44;
+        if (sw < 16) sw = 16;
+        Slider(rx + lx, ry + 6, sw, (v + 9) * 100 / 18);
         Text(rx + w / 2 - 16, ry + 2, OrDash(V(rows[i].key), "-"), 2, TR_DATUM, COL_FG);
     } // for
 
@@ -1365,19 +1434,19 @@ static void DisplayDumpScreen()
 {
     if (! useSprite) { Serial.print(F("TFTSHOT no sprite buffer\n")); return; }
     const uint16_t* px = (const uint16_t*)spr.getPointer();
-    Serial.printf_P(PSTR("TFTSHOT %d %d BEGIN\n"), SCREEN_W, SCREEN_H);
+    Serial.printf_P(PSTR("TFTSHOT %d %d BEGIN\n"), (int)PHYS_W, (int)PHYS_H);
     static const char hex[] = "0123456789ABCDEF";
-    char line[SCREEN_W * 4 + 2];
-    for (int y = 0; y < SCREEN_H; y++)
+    char line[PHYS_W * 4 + 2];
+    for (int y = 0; y < PHYS_H; y++)
     {
         char* o = line;
-        for (int x = 0; x < SCREEN_W; x++)
+        for (int x = 0; x < PHYS_W; x++)
         {
-            uint16_t v = px[y * SCREEN_W + x];
+            uint16_t v = px[y * PHYS_W + x];
             *o++ = hex[(v >> 12) & 15]; *o++ = hex[(v >> 8) & 15]; *o++ = hex[(v >> 4) & 15]; *o++ = hex[v & 15];
         } // for
         *o++ = '\n'; *o = 0;
-        Serial.write((const uint8_t*)line, SCREEN_W * 4 + 1);
+        Serial.write((const uint8_t*)line, PHYS_W * 4 + 1);
         Serial.flush();
     } // for
     Serial.print(F("TFTSHOT END\n"));
@@ -1402,8 +1471,8 @@ static void ExecuteDebugCommand(String cmd)
         Redraw();
         if (useSprite)
         {
-            if (snapshot == 0) snapshot = (uint8_t*)ps_malloc(SCREEN_W * SCREEN_H * 2);
-            if (snapshot) { memcpy(snapshot, spr.getPointer(), SCREEN_W * SCREEN_H * 2); snapshotReady = true; }
+            if (snapshot == 0) snapshot = (uint8_t*)ps_malloc(PHYS_W * PHYS_H * 2);
+            if (snapshot) { memcpy(snapshot, spr.getPointer(), PHYS_W * PHYS_H * 2); snapshotReady = true; }
         } // if
         Serial.print(F("tft: snapshot taken\n"));
     }
@@ -1453,12 +1522,14 @@ static void DisplayHandleSerial()
         cmd = "";
     } // while
 
-    if (pendingHttpCmd.length() > 0)
+    // Run all queued HTTP commands, in order
+    while (pendingHttpCmd.length() > 0)
     {
-        String c = pendingHttpCmd;
-        pendingHttpCmd = "";
+        int nl = pendingHttpCmd.indexOf('\n');
+        String c = nl >= 0 ? pendingHttpCmd.substring(0, nl) : pendingHttpCmd;
+        pendingHttpCmd = nl >= 0 ? pendingHttpCmd.substring(nl + 1) : "";
         ExecuteDebugCommand(c);
-    } // if
+    } // while
 } // DisplayHandleSerial
 
 // HTTP variant of the debug commands, for when the USB console is not reachable:
@@ -1470,10 +1541,10 @@ void DisplayRegisterDebugHttp(AsyncWebServer& server)
     {
         if (request->hasParam("cmd"))
         {
-            pendingHttpCmd = request->getParam("cmd")->value();
-            if (pendingHttpCmd == "tft") pendingHttpCmd = "tft shot";
-            snapshotReady = false;
-            request->send(200, "text/plain", "queued: " + pendingHttpCmd);
+            String c = request->getParam("cmd")->value();
+            if (c == "tft") { c = "tft shot"; snapshotReady = false; }
+            pendingHttpCmd += c + "\n";  // Queue: commands run in order in the loop task
+            request->send(200, "text/plain", "queued: " + c);
             return;
         } // if
         request->send(200, "text/plain", "usage: /tft?cmd=<tft command>, then /tft.raw");
@@ -1488,7 +1559,7 @@ void DisplayRegisterDebugHttp(AsyncWebServer& server)
     server.on("/tft.raw", HTTP_GET, [](AsyncWebServerRequest* request)
     {
         if (snapshot == 0 || ! snapshotReady) { request->send(503, "text/plain", "no snapshot"); return; }
-        request->send(200, "application/octet-stream", snapshot, SCREEN_W * SCREEN_H * 2);
+        request->send(200, "application/octet-stream", snapshot, PHYS_W * PHYS_H * 2);
     });
 } // DisplayRegisterDebugHttp
 
@@ -1512,13 +1583,13 @@ p{font-size:14px;margin:12px 0 0}
 var i=document.getElementById('i');
 function r(){var n=new Image();n.onload=function(){i.src=n.src;setTimeout(r,400)};n.onerror=function(){setTimeout(r,1500)};n.src='/tft.bmp?t='+Date.now()}
 setTimeout(r,400);
-i.onclick=function(e){var b=i.getBoundingClientRect();var x=Math.round((e.clientX-b.left)/b.width*320),y=Math.round((e.clientY-b.top)/b.height*240);fetch('/tft.tap?x='+x+'&y='+y)};
+i.onclick=function(e){var b=i.getBoundingClientRect();var x=Math.round((e.clientX-b.left)/b.width*i.naturalWidth),y=Math.round((e.clientY-b.top)/b.height*i.naturalHeight);fetch('/tft.tap?x='+x+'&y='+y)};
 </script></body></html>
 )=====";
 
 #define BMP_HDR 54
-#define BMP_ROW (SCREEN_W * 3)
-#define BMP_TOTAL (BMP_HDR + BMP_ROW * SCREEN_H)
+#define BMP_ROW (PHYS_W * 3)
+#define BMP_TOTAL (BMP_HDR + BMP_ROW * PHYS_H)
 
 static uint8_t bmpHeader[BMP_HDR];
 static volatile unsigned long bmpStreamingSince = 0;  // Non-zero while an image is being sent: redraws are paused
@@ -1533,11 +1604,11 @@ static void BuildBmpHeader()
     PutLe32(bmpHeader + 2, BMP_TOTAL);
     PutLe32(bmpHeader + 10, BMP_HDR);
     PutLe32(bmpHeader + 14, 40);                 // DIB header size
-    PutLe32(bmpHeader + 18, SCREEN_W);
-    PutLe32(bmpHeader + 22, (uint32_t)(-SCREEN_H)); // Negative height: rows top-down
+    PutLe32(bmpHeader + 18, PHYS_W);
+    PutLe32(bmpHeader + 22, (uint32_t)(-PHYS_H)); // Negative height: rows top-down
     PutLe16(bmpHeader + 26, 1);                  // Planes
     PutLe16(bmpHeader + 28, 24);                 // Bits per pixel
-    PutLe32(bmpHeader + 34, BMP_ROW * SCREEN_H);
+    PutLe32(bmpHeader + 34, BMP_ROW * PHYS_H);
     PutLe32(bmpHeader + 38, 2835);
     PutLe32(bmpHeader + 42, 2835);
 } // BuildBmpHeader
@@ -1582,8 +1653,9 @@ void DisplayRegisterHttp(AsyncWebServer& server)
     {
         if (request->hasParam("x") && request->hasParam("y"))
         {
-            remoteTapX = constrain(request->getParam("x")->value().toInt(), 0, SCREEN_W - 1);
-            remoteTapY = constrain(request->getParam("y")->value().toInt(), 0, SCREEN_H - 1);
+            // The page sends physical pixel positions; convert to the virtual canvas
+            remoteTapX = constrain(request->getParam("x")->value().toInt() * SCREEN_W / PHYS_W, 0, SCREEN_W - 1);
+            remoteTapY = constrain(request->getParam("y")->value().toInt() * SCREEN_H / PHYS_H, 0, SCREEN_H - 1);
             remoteTap = true;
         } // if
         request->send(200, "text/plain", "ok");
@@ -1597,9 +1669,9 @@ void DisplayRegisterHttp(AsyncWebServer& server)
 void DisplayStatusLine(const char* text)
 {
     tft.setTextDatum(BC_DATUM);
-    tft.setTextPadding(SCREEN_W - 8);
+    tft.setTextPadding(PHYS_W - 8);
     tft.setTextColor(COL_DIM, COL_BG);
-    tft.drawString(text, SCREEN_W / 2, SCREEN_H - 4, 2);
+    tft.drawString(text, PHYS_W / 2, PHYS_H - 4, 2);
     tft.setTextPadding(0);
 } // DisplayStatusLine
 
@@ -1616,21 +1688,21 @@ void SetupDisplay()
     // Splash
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(COL_ACCENT, COL_BG);
-    tft.drawString("VanLiveConnect", SCREEN_W / 2, 80, 4);
+    tft.drawString("VanLiveConnect", PHYS_W / 2, SY(80), 4);
     tft.setTextColor(COL_FG, COL_BG);
-    tft.drawString("Version " VAN_LIVE_CONNECT_VERSION, SCREEN_W / 2, 112, 2);
+    tft.drawString("Version " VAN_LIVE_CONNECT_VERSION, PHYS_W / 2, SY(112), 2);
   #ifdef WIFI_AP_MODE
     tft.setTextColor(COL_DIM, COL_BG);
-    tft.drawString("Wi-Fi: " WIFI_SSID, SCREEN_W / 2, 150, 2);
-    tft.drawString("http://" IP_ADDR "/MFD.html", SCREEN_W / 2, 170, 2);
+    tft.drawString("Wi-Fi: " WIFI_SSID, PHYS_W / 2, SY(150), 2);
+    tft.drawString("http://" IP_ADDR "/MFD.html", PHYS_W / 2, SY(170), 2);
   #endif // WIFI_AP_MODE
-    tft.drawString("Waiting for VAN bus data...", SCREEN_W / 2, 205, 2);
+    tft.drawString("Waiting for VAN bus data...", PHYS_W / 2, SY(205), 2);
 
     // Full-screen 16-bit sprite: 320 x 240 x 2 = 150 KB, goes to PSRAM
     spr.setColorDepth(16);
-    useSprite = spr.createSprite(SCREEN_W, SCREEN_H) != nullptr;
+    useSprite = spr.createSprite(PHYS_W, PHYS_H) != nullptr;
     gfx = useSprite ? (TFT_eSPI*)&spr : &tft;
-    Serial.printf_P(PSTR("TFT sprite buffer: %s\n"), useSprite ? "allocated" : "NOT allocated, drawing directly");
+    Serial.printf_P(PSTR("TFT sprite buffer (%d x %d): %s\n"), (int)PHYS_W, (int)PHYS_H, useSprite ? "allocated" : "NOT allocated, drawing directly");
     if (! useSprite) DisplayStatusLine("no sprite buffer");
 
     // Keep the splash until the first redraw is due
