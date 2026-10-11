@@ -78,8 +78,8 @@ float engineRpm = 800;
 float coolantC = 30;
 float exteriorC = 28;
 float fuelPerc = 62;
-float odometerKm = 163429.0;
-float trip1Km = 412.0;
+double odometerKm = 163429.0;  // double: a float cannot hold 50 ms distance steps at this size
+double trip1Km = 412.0;
 
 AudioSource_t audioSource = SRC_TUNER;
 uint8_t volume = 18;
