@@ -518,8 +518,9 @@ static const char* SpeedUnitStr()
 
 static void Text(int x, int y, const char* s, int font, uint8_t datum, uint16_t color, uint16_t bg = COL_PANEL)
 {
+    (void)bg;  // Text is drawn without a background box: the sprite is cleared before every frame
     gfx->setTextDatum(datum);
-    gfx->setTextColor(color, bg);
+    gfx->setTextColor(color);
     UseFont(font);
     gfx->drawString(s, SX(x), SY(y));
 } // Text
@@ -611,7 +612,7 @@ static void Bar(int x, int y, int w, int percent, uint16_t color = COL_ACCENT)
 static void Chip(int x, int y, int w, const char* text, bool on, uint16_t onColor = COL_ACCENT)
 {
     FillRR(x, y, w, 18, 5, on ? onColor : COL_LED_OFF, COL_PANEL);
-    int tier = TW(text, 2) > w - 4 ? 1 : 2;
+    int tier = BIG_DISPLAY ? 1 : (TW(text, 2) > w - 4 ? 1 : 2);
     Text(x + w / 2, y + 9, text, tier, MC_DATUM, on ? COL_FG : COL_DIM, on ? onColor : COL_LED_OFF);
 } // Chip
 
@@ -804,18 +805,19 @@ static void DrawPreflight()
     LabelValue(170, PANEL_Y + 66, "Dash brightness", OrDash(V(K_dashboard_programmed_brightness), "--"));
 
     // Status chips
-    int cy = PANEL_Y + 118;
+    int cy = PANEL_Y + 110;
     Chip(14, cy, 70, "HAZARD", On(K_hazard_lights), COL_WARN);
     Chip(90, cy, 60, "DOOR", On(K_door_open), COL_WARN);
     Chip(156, cy, 70, "GLOW", On(K_diesel_glow_plugs), COL_WARN);
     Chip(232, cy, 74, "LIGHTS", V(K_lights).indexOf("BEAM") >= 0, COL_OK);
 
     // VIN
-    Text(14, PANEL_Y + 146, "VIN", 2, TL_DATUM, COL_ACCENT);
-    Text(54, PANEL_Y + 146, OrDash(V(K_vin), "-----------------"), 2, TL_DATUM, COL_FG);
+    int vy = PANEL_Y + 136;
+    Text(14, vy, "VIN", 2, TL_DATUM, COL_ACCENT);
+    Text(14 + TW("VIN", 2) + 10, vy, OrDash(V(K_vin), "-----------------"), 2, TL_DATUM, COL_FG);
     int dy = FH(2) > 16 ? FH(2) : 16;
-    Text(14, PANEL_Y + 146 + dy, "Dash light", 2, TL_DATUM, COL_ACCENT);
-    Text(14 + TW("Dash light", 2) + 12, PANEL_Y + 146 + dy, OrDash(V(K_dash_light), "--"), 2, TL_DATUM, COL_FG);
+    Text(14, vy + dy, "Dash light", 2, TL_DATUM, COL_ACCENT);
+    Text(14 + TW("Dash light", 2) + 10, vy + dy, OrDash(V(K_dash_light), "--"), 2, TL_DATUM, COL_FG);
 } // DrawPreflight
 
 // Simple speaker glyph for the station tile
@@ -912,10 +914,10 @@ static void DrawAudio()
 
         String track = OrDash(ch ? V(K_cd_changer_current_track) : V(K_cd_current_track), "--");
         track += " / " + String(OrDash(ch ? V(K_cd_changer_total_tracks) : V(K_cd_total_tracks), "--"));
-        LabelValue(14, PANEL_Y + 92, "Track", track.c_str());
-        if (ch) LabelValue(150, PANEL_Y + 92, "Disc", OrDash(V(K_cd_changer_current_disc), "-"));
-        else LabelValue(150, PANEL_Y + 92, "Total", OrDash(V(K_cd_total_time), "--:--"));
-        LabelValue(236, PANEL_Y + 92, "Status", MediaStatusStr(ch ? V(K_cd_changer_status) : V(K_cd_status)), COL_FG, 2);
+        LabelValue(14, PANEL_Y + 88, "Track", track.c_str());
+        if (ch) LabelValue(150, PANEL_Y + 88, "Disc", OrDash(V(K_cd_changer_current_disc), "-"));
+        else LabelValue(150, PANEL_Y + 88, "Total", OrDash(V(K_cd_total_time), "--:--"));
+        LabelValue(236, PANEL_Y + 88, "Status", MediaStatusStr(ch ? V(K_cd_changer_status) : V(K_cd_status)), COL_FG, 2);
 
         if (ch)
         {
@@ -926,7 +928,7 @@ static void DrawAudio()
             for (int i = 0; i < 6; i++)
             {
                 char n[2] = { (char)('1' + i), 0 };
-                Chip(14 + i * 40, PANEL_Y + 138, 34, n, On(discKeys[i]), cur == i + 1 ? COL_ACCENT : COL_DIM);
+                Chip(14 + i * 40, PANEL_Y + 130, 34, n, On(discKeys[i]), cur == i + 1 ? COL_ACCENT : COL_DIM);
             } // for
         } // if
 
@@ -954,10 +956,10 @@ static void DrawTripValues(int x, int y, int tab)
 
     Text(x, y, "Average consumption", 2, TL_DATUM, COL_ACCENT);
     ValueUnit(x, y + 17, OrDash(cons, "--.-"), OrDash(V(K_fuel_consumption_unit), "l/100 km"));
-    Text(x, y + 46, "Average speed", 2, TL_DATUM, COL_ACCENT);
-    ValueUnit(x, y + 63, OrDash(spd, "--"), SpeedUnitStr());
-    Text(x, y + 92, "Distance", 2, TL_DATUM, COL_ACCENT);
-    ValueUnit(x, y + 109, OrDash(dist, "--"), DistanceUnitStr());
+    Text(x, y + 44, "Average speed", 2, TL_DATUM, COL_ACCENT);
+    ValueUnit(x, y + 61, OrDash(spd, "--"), SpeedUnitStr());
+    Text(x, y + 88, "Distance", 2, TL_DATUM, COL_ACCENT);
+    ValueUnit(x, y + 105, OrDash(dist, "--"), DistanceUnitStr());
 } // DrawTripValues
 
 static void DrawTrip()
@@ -969,15 +971,15 @@ static void DrawTrip()
     Chip(52, PANEL_Y + 10, 34, "2", tripTab == 2);
     Text(96, PANEL_Y + 19, tripTab == 1 ? "Trip computer 1" : "Trip computer 2", 2, ML_DATUM, COL_ACCENT);
 
-    DrawTripValues(14, PANEL_Y + 38, tripTab);
+    DrawTripValues(14, PANEL_Y + 34, tripTab);
 
     // Instant consumption and range on the right
-    Text(186, PANEL_Y + 38, "Instant", 2, TL_DATUM, COL_ACCENT);
-    ValueUnit(186, PANEL_Y + 55, OrDash(V(K_inst_consumption), "--.-"), OrDash(V(K_fuel_consumption_unit), "l/100 km"));
-    Text(186, PANEL_Y + 84, "Range", 2, TL_DATUM, COL_ACCENT);
-    ValueUnit(186, PANEL_Y + 101, OrDash(V(K_distance_to_empty), "---"), DistanceUnitStr());
+    Text(186, PANEL_Y + 34, "Instant", 2, TL_DATUM, COL_ACCENT);
+    ValueUnit(186, PANEL_Y + 51, OrDash(V(K_inst_consumption), "--.-"), OrDash(V(K_fuel_consumption_unit), "l/100 km"));
+    Text(186, PANEL_Y + 78, "Range", 2, TL_DATUM, COL_ACCENT);
+    ValueUnit(186, PANEL_Y + 95, OrDash(V(K_distance_to_empty), "---"), DistanceUnitStr());
     String odo = V(K_odometer_1).length() > 0 ? V(K_odometer_1) + " " + DistanceUnitStr() : "--";
-    LabelValue(186, PANEL_Y + 130, "Odometer", odo.c_str(), COL_FG, 2);
+    LabelValue(186, PANEL_Y + 122, "Odometer", odo.c_str(), COL_FG, 2);
 } // DrawTrip
 
 static void DrawNav()
@@ -1049,14 +1051,14 @@ static void DrawClimate()
     Bar(14, PANEL_Y + 82, SCREEN_W - 28, fanRep >= 0 ? fanRep * 100 / 7 : 0);
 
     String cp = V(K_condenser_pressure_bar).length() > 0 ? V(K_condenser_pressure_bar) + " bar" : "--";
-    LabelValue(14, PANEL_Y + 104, "Condenser pressure", cp.c_str());
+    LabelValue(14, PANEL_Y + 98, "Condenser pressure", cp.c_str());
     String ev = V(K_evaporator_temp).length() > 0 ? V(K_evaporator_temp) + " " + TempUnitStr() : "--";
-    LabelValue(170, PANEL_Y + 104, "Evaporator", ev.c_str());
+    LabelValue(170, PANEL_Y + 98, "Evaporator", ev.c_str());
 
     String ext = V(K_exterior_temp).length() > 0 ? V(K_exterior_temp) + " " + TempUnitStr() : "--";
-    LabelValue(14, PANEL_Y + 146, "Exterior", ext.c_str(), COL_FG, 2);
+    LabelValue(14, PANEL_Y + 136, "Exterior", ext.c_str(), COL_FG, 2);
     String cool = V(K_coolant_temp).length() > 0 ? V(K_coolant_temp) + " " + TempUnitStr() : "--";
-    LabelValue(170, PANEL_Y + 146, "Coolant", cool.c_str(), COL_FG, 2);
+    LabelValue(170, PANEL_Y + 136, "Coolant", cool.c_str(), COL_FG, 2);
 } // DrawClimate
 
 static void DrawSystem()
@@ -1064,30 +1066,30 @@ static void DrawSystem()
     Panel(0, PANEL_Y, SCREEN_W, PANEL_H);
 
     char buf[48];
-    Text(14, PANEL_Y + 10, "VanLiveConnect " VAN_LIVE_CONNECT_VERSION, 2, TL_DATUM, COL_ACCENT);
+    Text(14, PANEL_Y + 6, "VanLiveConnect " VAN_LIVE_CONNECT_VERSION, 2, TL_DATUM, COL_ACCENT);
 
   #ifdef WIFI_AP_MODE
-    Text(14, PANEL_Y + 30, "Wi-Fi " WIFI_SSID, 2, TL_DATUM, COL_FG);
-    Text(14, PANEL_Y + 48, "http://" IP_ADDR "/MFD.html", 2, TL_DATUM, COL_FG);
+    Text(14, PANEL_Y + 25, "Wi-Fi " WIFI_SSID, 2, TL_DATUM, COL_FG);
+    Text(14, PANEL_Y + 42, "http://" IP_ADDR "/MFD.html", 2, TL_DATUM, COL_FG);
   #else
-    Text(14, PANEL_Y + 30, "Wi-Fi " WIFI_SSID, 2, TL_DATUM, COL_FG);
-    Text(14, PANEL_Y + 48, V(K_esp_ip_address).c_str(), 2, TL_DATUM, COL_FG);
+    Text(14, PANEL_Y + 25, "Wi-Fi " WIFI_SSID, 2, TL_DATUM, COL_FG);
+    Text(14, PANEL_Y + 42, V(K_esp_ip_address).c_str(), 2, TL_DATUM, COL_FG);
   #endif
 
     snprintf(buf, sizeof(buf), "Browsers: %d", nWebSocketConnections);
-    LabelValue(14, PANEL_Y + 72, "WebSocket", buf, COL_FG, 2);
+    LabelValue(14, PANEL_Y + 64, "WebSocket", buf, COL_FG, 2);
     snprintf(buf, sizeof(buf), "%lu packets", (unsigned long)VanBusRx.GetCount());
-    LabelValue(170, PANEL_Y + 72, "VAN bus", buf, COL_FG, 2);
+    LabelValue(170, PANEL_Y + 64, "VAN bus", buf, COL_FG, 2);
 
     unsigned long age = (millis() - lastActivityAt) / 1000;
     snprintf(buf, sizeof(buf), "%lu s ago", age);
-    LabelValue(14, PANEL_Y + 108, "Last VAN packet", VanBusRx.GetCount() > 0 ? buf : "never", COL_FG, 2);
-    LabelValue(170, PANEL_Y + 108, "Free RAM", OrDash(V(K_esp_free_ram), "--"), COL_FG, 2);
+    LabelValue(14, PANEL_Y + 98, "Last VAN packet", VanBusRx.GetCount() > 0 ? buf : "never", COL_FG, 2);
+    LabelValue(170, PANEL_Y + 98, "Free RAM", OrDash(V(K_esp_free_ram), "--"), COL_FG, 2);
 
     unsigned long up = millis() / 1000;
     snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu", up / 3600, (up / 60) % 60, up % 60);
-    LabelValue(14, PANEL_Y + 144, "Uptime", buf, COL_FG, 2);
-    LabelValue(170, PANEL_Y + 144, "Wi-Fi RSSI", OrDash(V(K_esp_wifi_rssi), "--"), COL_FG, 2);
+    LabelValue(14, PANEL_Y + 132, "Uptime", buf, COL_FG, 2);
+    LabelValue(170, PANEL_Y + 132, "Wi-Fi RSSI", OrDash(V(K_esp_wifi_rssi), "--"), COL_FG, 2);
 } // DrawSystem
 
 // -----
