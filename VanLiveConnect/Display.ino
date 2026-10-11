@@ -245,10 +245,19 @@ static uint16_t touchHist[6][4] = { { 0 } };   // Last touches (raw x, raw y, sc
 // Raw-to-screen mapping for the landscape orientation (TFT_ROTATION 1), calibrated on the bench from taps on
 // known positions (2026-10-04): screen X follows raw X and screen Y follows raw Y, both inverted.
 //   raw X 3983 -> x 0, raw X 442 -> x 320;  raw Y 3874 -> y 0, raw Y 295 -> y 240
-#define TOUCH_X_RAW_AT_0 3983
-#define TOUCH_X_RAW_AT_MAX 442
-#define TOUCH_Y_RAW_AT_0 3874
-#define TOUCH_Y_RAW_AT_MAX 295
+#if TFT_HEIGHT >= 480
+  // 3.5" 480x320 module, least-squares fit from taps on DEMO, CLK, SYS and the screen centre (2026-10-11)
+  #define TOUCH_X_RAW_AT_0 4093
+  #define TOUCH_X_RAW_AT_MAX (-53)
+  #define TOUCH_Y_RAW_AT_0 3966
+  #define TOUCH_Y_RAW_AT_MAX 188
+#else
+  // 2.8" 320x240 module
+  #define TOUCH_X_RAW_AT_0 3983
+  #define TOUCH_X_RAW_AT_MAX 442
+  #define TOUCH_Y_RAW_AT_0 3874
+  #define TOUCH_Y_RAW_AT_MAX 295
+#endif
 
 static void TouchMap()
 {
