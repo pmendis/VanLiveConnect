@@ -64,6 +64,10 @@ unit, so functions are declared across files via forward declarations at the top
 | `Display.ino` | Optional on-board 2.8" ILI9341 TFT + XPT2046 touch (ESP32-S3). Compiled only with `-DUSE_TFT_DISPLAY`. Taps the JSON stream via `DisplayOnJson()` called from `SendJsonOnWebSocket()`; keys listed in the `DISPLAY_KEYS` X-macro. Eight tap-cycled pages (clock, instruments, pre-flight, head unit, trip, sat nav, climate, system) that also follow the original MFD via the `large_screen` key; popups for notifications, door open, audio settings and trip computer. Touch is bit-banged; drawing goes through a PSRAM sprite. Has its own clock fed from the browser's `date_time:` / `time_offset:` WebSocket messages (no TimeLib). Live view in any browser on the board's network: `/tft.html` (image `/tft.bmp` streamed from the sprite as 24-bit BMP, taps forwarded via `/tft.tap?x=&y=`). Debug build (`-DebugSerial`): `/tft?cmd=...`, `/tft.raw`, `/tft.touch`. Touch is calibrated from real taps (see `TouchMap`). Pins and TFT_eSPI defines: `Config.h` "TFT display" section and `extras/Scripts/flash_s3_display.ps1`. Branches: v1 `feature/s3-display`, v2/v3 `feature/s3-display-v2`. TEMPORARY: `DISPLAY_DEMO_BUTTON` blocks (footer DEMO button) are to be removed on the user's request. |
 
 `extras/` has schematics, screenshots, Android setup images, and IDE helper scripts.
+`extras/VanBusSimulator/` (branch `feature/van-simulator`) is a standalone "fake car" sketch for a spare ESP8266/ESP32:
+it transmits realistic VAN frames (dashboard, engine, lights, trip computer, notifications, head unit, audio) on
+D3 (sense on D2) into the VanLiveConnect RX pin, with a 60 s auto scenario and one-key serial commands. Its packet
+layouts mirror the parsers in `PacketToJson.ino`; keep them in sync if a parser changes.
 `extras/Scripts/flash_s3_display.ps1` builds/uploads the ESP32-S3 display variant (TFT_eSPI is configured
 through compiler defines, so this script is the single source of truth for the TFT pins). `README.md` is extensive
 and is the primary user documentation.
