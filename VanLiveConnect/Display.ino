@@ -135,7 +135,7 @@ static bool HmiFastFrame();
 
 #define POPUP_MS 6000UL
 #define AUDIO_POPUP_MS 4000UL
-#define TOUCH_DEBOUNCE_MS 400UL
+#define TOUCH_DEBOUNCE_MS 150UL  // The touch task already requires a release between taps
 #define REDRAW_INTERVAL_MS 100UL
 #define FAST_FRAME_MS 25UL  // HMI layout: gauges-only frames (speed / RPM), up to 40 per second
 
@@ -207,16 +207,29 @@ static int TW(const String& text, int tier)
 } // TW
 
 // -----
-// XPT2046 touch controller, bit-banged SPI
+// XPT2046 touch controller, bit-banged SPI, read by its own task
+//
+// The panel used to be read once per pass of the main loop, so only between screen updates (25 .. 100 ms apart):
+// a short tap could start and end unseen, and only a firm, held press was picked up. Now a small task on the other
+// CPU core polls it every TOUCH_POLL_MS and queues each tap (press edge) for HandleTouch(). Each poll first does a
+// throw-away conversion so the panel can settle after power-down (the first reading after wake-up comes out low),
+// and takes the median of three X and three Y samples.
 
-#define TOUCH_Z_THRESHOLD 400
+#if TFT_HEIGHT >= 480
+  #define TOUCH_Z_THRESHOLD 250   // 3.5" panel: larger, softer response
+#else
+  #define TOUCH_Z_THRESHOLD 400   // 2.8" panel
+#endif
+#define TOUCH_POLL_MS 5
+#define TOUCH_PRESS_POLLS 2       // Consecutive pressed polls that make a tap (filters single noisy readings)
+#define TOUCH_RELEASE_POLLS 3     // Consecutive released polls before the next tap can start
 
 static inline void TouchClockPulse()
 {
     digitalWrite(TFT_TOUCH_CLK, HIGH);
-    delayMicroseconds(2);
+    delayMicroseconds(1);
     digitalWrite(TFT_TOUCH_CLK, LOW);
-    delayMicroseconds(2);
+    delayMicroseconds(1);
 } // TouchClockPulse
 
 // Send an 8-bit command, then clock in the 12-bit result (1 busy bit, 12 data bits, 3 padding bits)
@@ -233,10 +246,10 @@ static uint16_t TouchTransfer(uint8_t cmd)
     for (int i = 0; i < 16; i++)
     {
         digitalWrite(TFT_TOUCH_CLK, HIGH);
-        delayMicroseconds(2);
+        delayMicroseconds(1);
         r = (r << 1) | (digitalRead(TFT_TOUCH_MISO) ? 1 : 0);
         digitalWrite(TFT_TOUCH_CLK, LOW);
-        delayMicroseconds(2);
+        delayMicroseconds(1);
     } // for
     return (r >> 3) & 0x0FFF;
 } // TouchTransfer
@@ -260,7 +273,8 @@ static void TouchSetup()
 
 static uint16_t touchRawX = 0, touchRawY = 0;  // Last raw 12-bit readings
 static int touchX = -1, touchY = -1;           // Last mapped screen position
-static uint16_t touchHist[6][4] = { { 0 } };   // Last touches (raw x, raw y, screen x, screen y), newest first
+static uint16_t touchRawZ = 0;                 // Pressure of the last tap
+static uint16_t touchHist[6][5] = { { 0 } };   // Last touches (raw x, raw y, screen x, screen y, z), newest first
 
 // Raw-to-screen mapping for the landscape orientation (TFT_ROTATION 1), calibrated on the bench from taps on
 // known positions (2026-10-04): screen X follows raw X and screen Y follows raw Y, both inverted.
@@ -285,21 +299,86 @@ static void TouchMap()
     touchY = constrain(map((long)touchRawY, TOUCH_Y_RAW_AT_0, TOUCH_Y_RAW_AT_MAX, 0, SCREEN_H), 0, SCREEN_H - 1);
 } // TouchMap
 
-// Returns true if the panel is being pressed; updates touchX / touchY
-static bool TouchPressed()
+static inline uint16_t Median3(uint16_t a, uint16_t b, uint16_t c)
+{
+    return a > b ? (b > c ? b : (a > c ? c : a)) : (a > c ? a : (b > c ? c : b));
+} // Median3
+
+// One poll of the panel (touch task only). Returns true if pressed; then x, y are raw positions. z = pressure.
+static bool TouchRead(uint16_t& x, uint16_t& y, uint16_t& z)
 {
     digitalWrite(TFT_TOUCH_CS, LOW);
+    TouchTransfer(0xB1);                // Throw-away conversion: the panel settles after power-down
     uint16_t z1 = TouchTransfer(0xB1);  // Z1, keep powered (PD = 01)
     uint16_t z2 = TouchTransfer(0xC1);  // Z2
-    uint16_t x = TouchTransfer(0x91);   // X
-    uint16_t y = TouchTransfer(0xD0);   // Y, power down with PENIRQ enabled (PD = 00)
+    int zz = (int)z1 + 4095 - (int)z2;
+    bool pressed = z1 > 0 && zz >= TOUCH_Z_THRESHOLD;
+    if (pressed)
+    {
+        uint16_t x1 = TouchTransfer(0x91), x2 = TouchTransfer(0x91), x3 = TouchTransfer(0x91);
+        uint16_t y1 = TouchTransfer(0xD1), y2 = TouchTransfer(0xD1);
+        uint16_t y3 = TouchTransfer(0xD0);  // Last Y: power down with PENIRQ enabled (PD = 00)
+        x = Median3(x1, x2, x3);
+        y = Median3(y1, y2, y3);
+    }
+    else TouchTransfer(0xD0);  // Power down with PENIRQ enabled
     digitalWrite(TFT_TOUCH_CS, HIGH);
-
-    int z = (int)z1 + 4095 - (int)z2;
-    bool pressed = z >= TOUCH_Z_THRESHOLD && z1 > 0;
-    if (pressed) { touchRawX = x; touchRawY = y; TouchMap(); }
+    z = zz < 0 ? 0 : (uint16_t)zz;
     return pressed;
-} // TouchPressed
+} // TouchRead
+
+// Taps found by the touch task, for HandleTouch() (single producer, single consumer)
+#define TOUCH_QUEUE_LEN 4
+static volatile uint16_t touchQueue[TOUCH_QUEUE_LEN][3];  // raw x, raw y, z
+static volatile uint8_t touchQHead = 0, touchQTail = 0;
+
+static void TouchTask(void*)
+{
+    int pressedPolls = 0, releasedPolls = TOUCH_RELEASE_POLLS;
+    bool armed = true;
+    for (;;)
+    {
+        uint16_t x = 0, y = 0, z = 0;
+        if (TouchRead(x, y, z))
+        {
+            releasedPolls = 0;
+            // A tap: pressed on consecutive polls; the position is taken from the confirming poll, when the pen
+            // has landed properly
+            if (armed && ++pressedPolls >= TOUCH_PRESS_POLLS)
+            {
+                armed = false;
+                uint8_t next = (touchQHead + 1) % TOUCH_QUEUE_LEN;
+                if (next != touchQTail)
+                {
+                    touchQueue[touchQHead][0] = x;
+                    touchQueue[touchQHead][1] = y;
+                    touchQueue[touchQHead][2] = z;
+                    __sync_synchronize();
+                    touchQHead = next;
+                } // if
+            } // if
+        }
+        else
+        {
+            pressedPolls = 0;
+            if (! armed && ++releasedPolls >= TOUCH_RELEASE_POLLS) armed = true;
+        } // if
+        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+    } // for
+} // TouchTask
+
+// Next queued tap, if any: sets touchRawX / touchRawY / touchRawZ and touchX / touchY
+static bool TouchNextTap()
+{
+    if (touchQTail == touchQHead) return false;
+    __sync_synchronize();
+    touchRawX = touchQueue[touchQTail][0];
+    touchRawY = touchQueue[touchQTail][1];
+    touchRawZ = touchQueue[touchQTail][2];
+    touchQTail = (touchQTail + 1) % TOUCH_QUEUE_LEN;
+    TouchMap();
+    return true;
+} // TouchNextTap
 
 // -----
 // Data: all JSON keys shown on the TFT, stored as the strings sent to the browser
@@ -1504,12 +1583,9 @@ static int remoteTapX = 0, remoteTapY = 0;
 
 static void HandleTouch()
 {
-    // Act once per touch: on the press edge only, with a short debounce
-    static bool wasPressed = false;
-    bool pressed = TouchPressed();
-    bool edge = pressed && ! wasPressed;
-    wasPressed = pressed;
-    if (remoteTap)
+    // Act once per touch: taps (press edges) come from the touch task, or from the live view web page
+    bool edge = TouchNextTap();
+    if (! edge && remoteTap)
     {
         remoteTap = false;
         touchX = remoteTapX; touchY = remoteTapY;
@@ -1519,6 +1595,7 @@ static void HandleTouch()
     urgentRedraw = true;
     for (int i = 5; i > 0; i--) memcpy(touchHist[i], touchHist[i - 1], sizeof(touchHist[0]));
     touchHist[0][0] = touchRawX; touchHist[0][1] = touchRawY; touchHist[0][2] = touchX; touchHist[0][3] = touchY;
+    touchHist[0][4] = touchRawZ;
     if (millis() - lastTouchAt < TOUCH_DEBOUNCE_MS) return;
     lastTouchAt = millis();
 
@@ -1746,7 +1823,9 @@ void DisplayRegisterDebugHttp(AsyncWebServer& server)
         b += "frame " + String(PHYS_W) + "x" + String(PHYS_H) + ": draw " + String(frameDrawUs / 1000) + " ms (max " + String(frameDrawMaxUs / 1000)
             + "), push " + String(framePushUs / 1000) + " ms (max " + String(framePushMaxUs / 1000) + ")\n";
         for (int i = 0; i < 6; i++)
-            b += "raw x=" + String(touchHist[i][0]) + " y=" + String(touchHist[i][1]) + " -> screen x=" + String(touchHist[i][2]) + " y=" + String(touchHist[i][3]) + "\n";
+            b += "raw x=" + String(touchHist[i][0]) + " y=" + String(touchHist[i][1]) + " -> screen x=" + String(touchHist[i][2]) + " y=" + String(touchHist[i][3])
+                + "  z=" + String(touchHist[i][4]) + "\n";
+        b += "touch threshold z >= " + String(TOUCH_Z_THRESHOLD) + "\n";
         request->send(200, "text/plain", b);
     });
     server.on("/tft.raw", HTTP_GET, [](AsyncWebServerRequest* request)
@@ -1877,6 +1956,9 @@ void SetupDisplay()
     tft.fillScreen(COL_BG);
 
     TouchSetup();
+
+    // Poll the touch panel from its own task on the other core (the main loop runs on core 1)
+    xTaskCreatePinnedToCore(TouchTask, "touch", 3072, nullptr, 1, nullptr, 0);
 
     // Splash
     tft.setTextDatum(MC_DATUM);
