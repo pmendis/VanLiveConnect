@@ -34,7 +34,7 @@ $boardOptions = "CPUFreq=240,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,PSRA
 # TFT_eSPI takes its configuration from compiler defines. Keep in sync with the comment block in Config.h.
 # Panel-specific defines
 if ($Display -eq "35") {
-    $panelFlags = @("-DILI9488_DRIVER=1", "-DTFT_WIDTH=320", "-DTFT_HEIGHT=480", "-DSPI_FREQUENCY=27000000", "-DSPI_READ_FREQUENCY=16000000")
+    $panelFlags = @("-DILI9488_DRIVER=1", "-DTFT_WIDTH=320", "-DTFT_HEIGHT=480", "-DSPI_FREQUENCY=40000000", "-DSPI_READ_FREQUENCY=16000000")
 } else {
     $panelFlags = @("-DILI9341_DRIVER=1", "-DTFT_WIDTH=240", "-DTFT_HEIGHT=320", "-DSPI_FREQUENCY=40000000", "-DSPI_READ_FREQUENCY=20000000")
 }
@@ -52,8 +52,12 @@ $tftFlags = (@(
     "-DLOAD_GLCD", "-DLOAD_FONT2", "-DLOAD_FONT4", "-DLOAD_FONT6", "-DLOAD_FONT7", "-DLOAD_FONT8", "-DLOAD_GFXFF"
 ) + $panelFlags) -join " "
 
+# Separate build folder per panel type, so switching -Display does not invalidate the other build's cache
+$buildPath = Join-Path $env:LOCALAPPDATA ("arduino\sketches\vanliveconnect-s3-" + $(if ($NoDisplay) { "nodisplay" } else { $Display }) + $(if ($DebugSerial) { "-dbg" } else { "" }))
+
 $cliArgs = @(
     "compile",
+    "--build-path", $buildPath,
     "--fqbn", $fqbn,
     "--board-options", $boardOptions,
     "--library", (Join-Path $lib "ESP_Async_WebServer"),

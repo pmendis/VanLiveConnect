@@ -357,6 +357,7 @@ static unsigned long popupUntil = 0;
 static String popupTripTab;  // "TR1", "TR2" or "FUE"
 static unsigned long lastTouchAt = 0;
 static unsigned long lastRedrawAt = 0;
+static bool urgentRedraw = false;  // Set by a tap: redraw without waiting for the redraw interval
 
 #ifdef DISPLAY_DEMO_BUTTON
 static bool demoMode = false;
@@ -1200,8 +1201,80 @@ static void DrawTripPopup()
 // -----
 // Redraw
 
+// Push rows y0 .. y0+h-1 of the sprite to the panel.
+//
+// ILI9488 over SPI only accepts 18-bit colour (3 bytes per pixel). TFT_eSPI converts the sprite's 16-bit pixels
+// one at a time and feeds the SPI FIFO a few bytes at a time, which takes ~690 ms per 480x320 frame at 40 MHz.
+// Here each line is converted into a small buffer in internal RAM and sent with one bulk SPI transfer, which
+// brings a full frame to ~120 ms, close to the wire time. Other panels use the library's native (fast) path.
+static void PushRows(int y0, int h)
+{
+  #ifdef ILI9488_DRIVER
+    static uint8_t lineBuf[PHYS_W * 3];
+    const uint8_t* px = (const uint8_t*)spr.getPointer();
+    SPIClass& bus = tft.getSPIinstance();
+
+    tft.startWrite();
+    tft.setAddrWindow(0, y0, PHYS_W, h);
+    for (int y = y0; y < y0 + h; y++)
+    {
+        const uint8_t* src = px + (size_t)y * PHYS_W * 2;
+        uint8_t* dst = lineBuf;
+        for (int x = 0; x < PHYS_W; x++)
+        {
+            // Sprite pixels are RGB565 stored byte-swapped (big-endian) for SPI
+            uint16_t v = ((uint16_t)src[0] << 8) | src[1];
+            src += 2;
+            *dst++ = (v >> 8) & 0xF8;  // R
+            *dst++ = (v >> 3) & 0xFC;  // G
+            *dst++ = (v << 3) & 0xF8;  // B
+        } // for
+        bus.writeBytes(lineBuf, sizeof(lineBuf));
+    } // for
+    tft.endWrite();
+  #else
+    spr.pushSprite(0, y0, 0, y0, PHYS_W, h);
+  #endif // ILI9488_DRIVER
+} // PushRows
+
+// Push only the rows that changed since the previous frame. A once-a-second refresh then usually sends
+// nothing at all, so it no longer blocks the loop (and taps) for a full-frame transfer.
+static uint32_t rowHash[PHYS_H] = { 0 };
+static bool rowHashValid = false;
+
+static void PushFrame()
+{
+    const uint32_t* px = (const uint32_t*)spr.getPointer();
+    const int wordsPerRow = PHYS_W / 2;  // 2 pixels per 32-bit word
+    int spanStart = -1;
+    for (int y = 0; y <= PHYS_H; y++)
+    {
+        bool changed = false;
+        if (y < PHYS_H)
+        {
+            const uint32_t* row = px + (size_t)y * wordsPerRow;
+            uint32_t hsh = 2166136261UL;
+            for (int i = 0; i < wordsPerRow; i++) hsh = (hsh ^ row[i]) * 16777619UL;
+            changed = ! rowHashValid || hsh != rowHash[y];
+            rowHash[y] = hsh;
+        } // if
+
+        if (changed && spanStart < 0) spanStart = y;
+        else if (! changed && spanStart >= 0)
+        {
+            PushRows(spanStart, y - spanStart);
+            spanStart = -1;
+        } // if
+    } // for
+    rowHashValid = true;
+} // PushFrame
+
+// Frame timing (microseconds): rendering into the sprite, and pushing the sprite to the panel
+static unsigned long frameDrawUs = 0, framePushUs = 0, frameDrawMaxUs = 0, framePushMaxUs = 0;
+
 static void Redraw()
 {
+    unsigned long t0 = micros();
     if (useSprite) spr.fillSprite(COL_BG);
     else if (fullRedraw) tft.fillScreen(COL_BG);
 
@@ -1234,7 +1307,13 @@ static void Redraw()
         } // switch
     } // if
 
-    if (useSprite) spr.pushSprite(0, 0);
+    unsigned long t1 = micros();
+    if (useSprite) PushFrame();
+    unsigned long t2 = micros();
+
+    frameDrawUs = t1 - t0; framePushUs = t2 - t1;
+    if (frameDrawUs > frameDrawMaxUs) frameDrawMaxUs = frameDrawUs;
+    if (framePushUs > framePushMaxUs) framePushMaxUs = framePushUs;
 
     fullRedraw = false;
     dirty = false;
@@ -1332,6 +1411,7 @@ static void HandleTouch()
         edge = true;
     } // if
     if (! edge) return;
+    urgentRedraw = true;
     for (int i = 5; i > 0; i--) memcpy(touchHist[i], touchHist[i - 1], sizeof(touchHist[0]));
     touchHist[0][0] = touchRawX; touchHist[0][1] = touchRawY; touchHist[0][2] = touchX; touchHist[0][3] = touchY;
     if (millis() - lastTouchAt < TOUCH_DEBOUNCE_MS) return;
@@ -1552,6 +1632,8 @@ void DisplayRegisterDebugHttp(AsyncWebServer& server)
     server.on("/tft.touch", HTTP_GET, [](AsyncWebServerRequest* request)
     {
         String b = "page=" + String(currentPage) + "\n";
+        b += "frame " + String(PHYS_W) + "x" + String(PHYS_H) + ": draw " + String(frameDrawUs / 1000) + " ms (max " + String(frameDrawMaxUs / 1000)
+            + "), push " + String(framePushUs / 1000) + " ms (max " + String(framePushMaxUs / 1000) + ")\n";
         for (int i = 0; i < 6; i++)
             b += "raw x=" + String(touchHist[i][0]) + " y=" + String(touchHist[i][1]) + " -> screen x=" + String(touchHist[i][2]) + " y=" + String(touchHist[i][3]) + "\n";
         request->send(200, "text/plain", b);
@@ -1737,7 +1819,8 @@ void LoopDisplay()
     } // if
 
     if (! dirty && ! fullRedraw) return;
-    if ((long)(millis() - lastRedrawAt) < (long)REDRAW_INTERVAL_MS) return;
+    if (! urgentRedraw && (long)(millis() - lastRedrawAt) < (long)REDRAW_INTERVAL_MS) return;
+    urgentRedraw = false;
 
     // Hold the frame while the live view is reading it (with a safety timeout)
     if (bmpStreamingSince != 0 && millis() - bmpStreamingSince < 3000UL) return;
