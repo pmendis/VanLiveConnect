@@ -49,7 +49,7 @@ $tftFlags = (@(
     "-DTFT_SCLK=12", "-DTFT_MOSI=11", "-DTFT_MISO=14",
     "-DTFT_CS=10", "-DTFT_DC=9", "-DTFT_RST=8",
     "-DTFT_BL=7", "-DTFT_BACKLIGHT_ON=HIGH",
-    "-DLOAD_GLCD", "-DLOAD_FONT2", "-DLOAD_FONT4", "-DLOAD_FONT6", "-DLOAD_FONT7", "-DLOAD_FONT8", "-DLOAD_GFXFF"
+    "-DLOAD_GLCD", "-DLOAD_FONT2", "-DLOAD_FONT4", "-DLOAD_FONT6", "-DLOAD_FONT7", "-DLOAD_FONT8", "-DLOAD_GFXFF", "-DSMOOTH_FONT"
 ) + $panelFlags) -join " "
 
 # Separate build folder per panel type, so switching -Display does not invalidate the other build's cache

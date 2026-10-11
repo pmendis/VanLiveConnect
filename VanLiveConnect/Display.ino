@@ -109,6 +109,23 @@ static void CivilFromDays(int32_t z, int& y, int& m, int& d)
 static inline int SX(int v) { return (int)((long)v * PHYS_W / SCREEN_W); }
 static inline int SY(int v) { return (int)((long)v * PHYS_H / SCREEN_H); }
 
+// On the large panel, the "HMI" layout of DisplayHmi.ino draws the header, footer, Clock, Engine and Media pages
+// natively at 480x320 with smooth fonts; the other pages keep the scaled layout below.
+#if TFT_HEIGHT >= 480
+  #define HMI_LAYOUT
+#endif
+
+#ifdef HMI_LAYOUT
+static void HmiDrawBackground();
+static void HmiDrawHeader();
+static void HmiDrawFooter();
+static bool HmiDrawPage();
+static void HmiDrawBanner();
+static bool HmiHandleTouch(int vx, int vy);
+static void HmiSetup();
+static void HmiOnJson(JsonObjectConst d);
+#endif // HMI_LAYOUT
+
 #define HEADER_H 30
 #define PANEL_Y 34
 #define PANEL_H 182
@@ -372,8 +389,13 @@ static bool urgentRedraw = false;  // Set by a tap: redraw without waiting for t
 static bool demoMode = false;
 static int demoStep = 0;
 #define DEMO_POPUP_MS 3600000UL  // Demo popups stay until tapped
-#define DEMO_BTN_X 44
-#define DEMO_BTN_W 60
+#ifdef HMI_LAYOUT
+  #define DEMO_BTN_X 4   // Footer, left (virtual units; 6..66 px on the panel)
+  #define DEMO_BTN_W 40
+#else
+  #define DEMO_BTN_X 44
+  #define DEMO_BTN_W 60
+#endif
 static void DemoLoadValues();
 static void DemoStep();
 #endif // DISPLAY_DEMO_BUTTON
@@ -411,6 +433,8 @@ static JsonDocument& DisplayFilter()
         filter["event"] = true;
         JsonObject data = filter["data"].to<JsonObject>();
         for (int i = 0; i < N_KEYS; i++) data[keyNames[i]] = true;
+        data["fuel_level_perc"] = true;    // {"style": {"transform": "scaleX(n)"}}
+        data["coolant_temp_perc"] = true;
         built = true;
     } // if
     return filter;
@@ -442,6 +466,10 @@ void DisplayOnJson(const char* json)
         changed[i] = true;
         dirty = true;
     } // for
+
+  #ifdef HMI_LAYOUT
+    HmiOnJson(d);
+  #endif // HMI_LAYOUT
 
     // Follow the original MFD's large screen
     if (changed[K_large_screen])
@@ -1291,26 +1319,44 @@ static void Redraw()
 
     if (useSprite || ! PopupActive())
     {
+      #ifdef HMI_LAYOUT
+        if (useSprite) HmiDrawBackground();
+        bool native = HmiDrawPage();
+      #else
         DrawHeader();
-        switch (currentPage)
+        const bool native = false;
+      #endif // HMI_LAYOUT
+        if (! native)
         {
-            case PG_CLOCK: DrawClock(); break;
-            case PG_INSTRUMENTS: DrawInstruments(); break;
-            case PG_PREFLIGHT: DrawPreflight(); break;
-            case PG_AUDIO: DrawAudio(); break;
-            case PG_TRIP: DrawTrip(); break;
-            case PG_NAV: DrawNav(); break;
-            case PG_CLIMATE: DrawClimate(); break;
-            case PG_SYSTEM: DrawSystem(); break;
-        } // switch
+            switch (currentPage)
+            {
+                case PG_CLOCK: DrawClock(); break;
+                case PG_INSTRUMENTS: DrawInstruments(); break;
+                case PG_PREFLIGHT: DrawPreflight(); break;
+                case PG_AUDIO: DrawAudio(); break;
+                case PG_TRIP: DrawTrip(); break;
+                case PG_NAV: DrawNav(); break;
+                case PG_CLIMATE: DrawClimate(); break;
+                case PG_SYSTEM: DrawSystem(); break;
+            } // switch
+        } // if
+      #ifdef HMI_LAYOUT
+        HmiDrawHeader();
+        HmiDrawFooter();
+      #else
         DrawFooter();
+      #endif // HMI_LAYOUT
     } // if
 
     if (PopupActive())
     {
         switch (popupKind)
         {
+          #ifdef HMI_LAYOUT
+            case POPUP_NOTIFICATION: HmiDrawBanner(); break;
+          #else
             case POPUP_NOTIFICATION: DrawNotificationPopup(); break;
+          #endif // HMI_LAYOUT
             case POPUP_DOOR: DrawDoorPopup(); break;
             case POPUP_AUDIO: DrawAudioPopup(); break;
             case POPUP_TRIP: DrawTripPopup(); break;
@@ -1361,6 +1407,7 @@ static const char demoValuesJson[] PROGMEM =
     "\"satnav_turn_at\":\"350 m\",\"satnav_minutes_to_travel\":\"17\",\"satnav_guidance_status\":\"IN_GUIDANCE_MODE \","
     "\"ac_enabled\":\"YES\",\"ac_compressor\":\"ON\",\"recirc\":\"OFF\",\"rear_heater_1\":\"OFF\",\"reported_fan_speed\":\"4\","
     "\"set_fan_speed\":\"4\",\"condenser_pressure_bar\":\"11.2\",\"evaporator_temp\":\"4.5\","
+    "\"fuel_level_perc\":{\"style\":{\"transform\":\"scaleX(0.78)\"}},\"coolant_temp_perc\":{\"style\":{\"transform\":\"scaleX(0.49)\"}},"
     "\"esp_free_ram\":\"214560 bytes\",\"esp_wifi_rssi\":\"-52 dB\""
     "}}";
 
@@ -1446,6 +1493,10 @@ static void HandleTouch()
     } // if
   #endif // DISPLAY_DEMO_BUTTON
 
+  #ifdef HMI_LAYOUT
+    // A tap on a header tab icon jumps to that page
+    if (HmiHandleTouch(touchX, touchY)) return;
+  #else
     // A tap on a header tab name jumps to that page
     if (touchY < HEADER_H + 6)
     {
@@ -1460,6 +1511,7 @@ static void HandleTouch()
             } // if
         } // for
     } // if
+  #endif // HMI_LAYOUT
 
     // A tap on a popup closes it
     if (PopupActive())
@@ -1518,6 +1570,7 @@ static const char demoJson[] PROGMEM =
     "\"satnav_turn_at\":\"350 m\",\"satnav_minutes_to_travel\":\"17\",\"satnav_guidance_status\":\"IN_GUIDANCE_MODE \","
     "\"ac_enabled\":\"YES\",\"ac_compressor\":\"ON\",\"recirc\":\"OFF\",\"rear_heater_1\":\"OFF\",\"reported_fan_speed\":\"4\","
     "\"set_fan_speed\":\"4\",\"condenser_pressure_bar\":\"11.2\",\"evaporator_temp\":\"4.5\","
+    "\"fuel_level_perc\":{\"style\":{\"transform\":\"scaleX(0.78)\"}},\"coolant_temp_perc\":{\"style\":{\"transform\":\"scaleX(0.49)\"}},"
     "\"esp_free_ram\":\"214560 bytes\",\"esp_wifi_rssi\":\"-52 dB\""
     "}}";
 
@@ -1797,6 +1850,9 @@ void SetupDisplay()
     gfx = useSprite ? (TFT_eSPI*)&spr : &tft;
     Serial.printf_P(PSTR("TFT sprite buffer (%d x %d): %s\n"), (int)PHYS_W, (int)PHYS_H, useSprite ? "allocated" : "NOT allocated, drawing directly");
     if (! useSprite) DisplayStatusLine("no sprite buffer");
+  #ifdef HMI_LAYOUT
+    if (useSprite) HmiSetup();
+  #endif // HMI_LAYOUT
 
     // Keep the splash until the first redraw is due
     lastRedrawAt = millis() + 2500;
